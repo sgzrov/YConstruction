@@ -1,5 +1,9 @@
 import Foundation
 
+private func ycLog(_ message: String) {
+    print("[YC][RAG] \(message)")
+}
+
 struct LocalRAGMatch: Equatable, Sendable {
     let record: CachedProjectChangeRecord
     let document: String
@@ -67,8 +71,25 @@ actor LocalRAGService {
         }
     }
 
+    /// Score a raw utterance against the current index without any score cutoff.
+    /// Returns the single best match (or nil if the index is empty / no results).
+    /// Callers use this to route intent by semantic similarity rather than keywords.
+    func scoreUtterance(
+        _ utterance: String,
+        against records: [CachedProjectChangeRecord]
+    ) async throws -> LocalRAGMatch? {
+        _ = try await refreshIndex(from: records)
+        guard indexHandle != nil else {
+            ycLog("[scoreUtterance] no index available — returning nil")
+            return nil
+        }
+        let result = try await query(question: utterance, topK: 1, scoreThreshold: 0.0)
+        return result.matches.first
+    }
+
     @discardableResult
     func refreshIndex(from records: [CachedProjectChangeRecord]) async throws -> Int {
+        ycLog("[refreshIndex] cached records=\(records.count) synced=\(records.filter(\.synced).count)")
         let syncedRecords = records
             .filter(\.synced)
             .sorted {
@@ -79,6 +100,7 @@ actor LocalRAGService {
             }
 
         guard !syncedRecords.isEmpty else {
+            ycLog("[refreshIndex] no synced records — RAG index will be empty")
             indexedFingerprint = nil
             indexedRecordsByVectorID = [:]
             indexedDocumentsByVectorID = [:]
@@ -88,8 +110,10 @@ actor LocalRAGService {
 
         let fingerprint = Self.makeFingerprint(for: syncedRecords)
         if fingerprint == indexedFingerprint, indexHandle != nil {
+            ycLog("[refreshIndex] reusing existing index (\(syncedRecords.count) records, fingerprint unchanged)")
             return syncedRecords.count
         }
+        ycLog("[refreshIndex] rebuilding index for \(syncedRecords.count) record(s)")
 
         let model = try await loadEmbeddingModelIfNeeded()
         let documents = syncedRecords.map(Self.makeDocument)
@@ -126,34 +150,50 @@ actor LocalRAGService {
         self.indexedFingerprint = fingerprint
         self.indexedRecordsByVectorID = Dictionary(uniqueKeysWithValues: zip(vectorIDs, syncedRecords))
         self.indexedDocumentsByVectorID = Dictionary(uniqueKeysWithValues: zip(vectorIDs, documents))
+        ycLog("[refreshIndex] index ready: \(syncedRecords.count) records, dim=\(embeddingDim)")
 
         return syncedRecords.count
     }
+
+    /// Instruction prefix Qwen3-Embedding expects on the query side (not on documents).
+    /// Format per Qwen docs: "Instruct: {task}\nQuery: {text}".
+    /// Skipping this costs roughly 1–5% retrieval accuracy on Qwen3.
+    private static let qwenQueryInstruction =
+        "Instruct: Given a construction defect question, retrieve relevant prior defect reports that answer it.\nQuery: "
 
     func query(
         question: String,
         topK: Int = 5,
         scoreThreshold: Float = 0.58
     ) async throws -> LocalRAGQueryResult {
-        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        ycLog("[query] topK=\(topK) threshold=\(scoreThreshold) qLen=\(trimmedQuestion.count) preview=\"\(trimmedQuestion.prefix(120))\"")
+        guard !trimmedQuestion.isEmpty else {
+            ycLog("[query] ERROR empty question")
             throw LocalRAGError.indexUnavailable
         }
 
         guard let indexHandle else {
             if indexedRecordsByVectorID.isEmpty {
+                ycLog("[query] ERROR no synced reports cached locally")
                 throw LocalRAGError.noSyncedReports
             }
+            ycLog("[query] ERROR index unavailable")
             throw LocalRAGError.indexUnavailable
         }
 
+        let started = Date()
         let model = try await loadEmbeddingModelIfNeeded()
-        let queryEmbedding = try CactusRuntime.embedText(model: model, text: question)
+        let prefixedQuery = Self.qwenQueryInstruction + trimmedQuestion
+        let queryEmbedding = try CactusRuntime.embedText(model: model, text: prefixedQuery)
+        ycLog("[query] embedded query in \(String(format: "%.2f", Date().timeIntervalSince(started)))s dim=\(queryEmbedding.count) (with Qwen3 instruct prefix)")
         let rawMatches = try CactusRuntime.queryIndex(
             index: indexHandle,
             embedding: queryEmbedding,
             topK: topK,
             scoreThreshold: scoreThreshold
         )
+        ycLog("[query] cosine search returned \(rawMatches.count) match(es) topScore=\(String(format: "%.3f", rawMatches.first?.score ?? 0))")
 
         let matches = rawMatches.compactMap { rawMatch -> LocalRAGMatch? in
             guard let record = indexedRecordsByVectorID[rawMatch.id],

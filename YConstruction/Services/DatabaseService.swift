@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-final class DatabaseService: @unchecked Sendable {
+nonisolated final class DatabaseService: @unchecked Sendable {
     static let shared: DatabaseService = {
         do {
             return try DatabaseService(filename: "yconstruction.sqlite")
@@ -185,11 +185,11 @@ final class DatabaseService: @unchecked Sendable {
         }
     }
 
-    func markSynced(id: String, photoUrl: String?) throws {
+    func markSynced(id: String, photoUrl: String?, bcfPath: String? = nil) throws {
         try dbPool.write { db in
             try db.execute(
-                sql: "UPDATE defects SET synced = 1, photo_url = COALESCE(?, photo_url) WHERE id = ?",
-                arguments: [photoUrl, id]
+                sql: "UPDATE defects SET synced = 1, photo_url = COALESCE(?, photo_url), bcf_path = COALESCE(?, bcf_path) WHERE id = ?",
+                arguments: [photoUrl, bcfPath, id]
             )
         }
     }

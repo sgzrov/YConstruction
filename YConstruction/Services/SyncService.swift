@@ -6,6 +6,7 @@ import Supabase
 @MainActor
 final class SyncService: ObservableObject {
     @Published private(set) var isOnline: Bool = false
+    @Published private(set) var isOnWiFi: Bool = false
     @Published private(set) var isSyncing: Bool = false
     @Published private(set) var lastSyncedAt: Date?
 
@@ -43,6 +44,7 @@ final class SyncService: ObservableObject {
                 let wasOnline = self.isOnline
                 let nowOnline = path.status == .satisfied
                 self.isOnline = nowOnline
+                self.isOnWiFi = nowOnline && path.usesInterfaceType(.wifi)
                 if nowOnline && !wasOnline {
                     await self.reconnectSync()
                     self.startRealtime()
@@ -118,8 +120,12 @@ final class SyncService: ObservableObject {
 
         for defect in pending {
             do {
-                try await upload(defect, client: client)
-                try database.markSynced(id: defect.id, photoUrl: publicUrl(defect: defect, client: client))
+                let uploaded = try await upload(defect, client: client)
+                try database.markSynced(
+                    id: defect.id,
+                    photoUrl: publicUrl(defect: defect, client: client),
+                    bcfPath: uploaded.bcfPath
+                )
             } catch {
                 print("sync failed for \(defect.id): \(error)")
                 break
@@ -154,8 +160,10 @@ final class SyncService: ObservableObject {
         }
     }
 
-    private func upload(_ defect: Defect, client: SupabaseClient) async throws {
-        let normalized = defect.normalizedForUpload()
+    @discardableResult
+    private func upload(_ defect: Defect, client: SupabaseClient) async throws -> Defect {
+        var normalized = defect.normalizedForUpload()
+        normalized.synced = true
 
         if let photoPath = normalized.photoPath, FileManager.default.fileExists(atPath: photoPath) {
             let remote = "\(normalized.projectId)/\(URL(fileURLWithPath: photoPath).lastPathComponent)"
@@ -171,6 +179,7 @@ final class SyncService: ObservableObject {
             let options = FileOptions(upsert: true)
             try await client.storage.from(supabase.config.issuesBucket)
                 .upload(remote, data: data, options: options)
+            normalized.bcfPath = remote
         }
 
         let row = try defectPayload(normalized)
@@ -178,6 +187,7 @@ final class SyncService: ObservableObject {
             .from("project_changes")
             .upsert(row, onConflict: "id")
             .execute()
+        return normalized
     }
 
     private func defectPayload(_ d: Defect) throws -> [String: AnyJSON] {

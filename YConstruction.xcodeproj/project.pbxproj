@@ -7,12 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		289988844C5355868918AE09 /* DefectSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E5181AEF2E53A76334E352 /* DefectSync.swift */; };
 		3558C72FC0857A16D8A841A3 /* ChatViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B493897AA88B167B85448509 /* ChatViewModel.swift */; };
 		65C58EE92F94402200767A53 /* cactus-ios.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 65C58EE72F94401F00767A53 /* cactus-ios.xcframework */; };
 		65C58EEA2F94402200767A53 /* cactus-ios.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 65C58EE72F94401F00767A53 /* cactus-ios.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		72253D4FA187A9481603AD5A /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = 203CEFB6E11EF106929E9E0E /* Message.swift */; };
 		7631DFC94E8947BC084D427A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 115B7495C4E5C4224FEC0B46 /* ChatView.swift */; };
-		7948D6E25864D26603A98A7D /* BackendSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE799B417AB7C3FE366802D2 /* BackendSyncService.swift */; };
 		7DF703FCB4E76C0BB98DA3D6 /* LocalModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C1512FC85B42FCA6AE50DC /* LocalModelStore.swift */; };
 		82BBE70BAF1780D184E76055 /* LocalRAGService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFFFBEEB719005F01DAF94AF /* LocalRAGService.swift */; };
 		91164889298301BEFA694359 /* CactusRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2986B55218D5BCBBA312D309 /* CactusRuntime.swift */; };
@@ -50,8 +50,8 @@
 		2F1E76C0595A35756F4B46D3 /* MockAIService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MockAIService.swift; sourceTree = "<group>"; };
 		65C58EC82F94356C00767A53 /* YConstruction.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YConstruction.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		65C58EE72F94401F00767A53 /* cactus-ios.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = "cactus-ios.xcframework"; sourceTree = "<group>"; };
+		91E5181AEF2E53A76334E352 /* DefectSync.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DefectSync.swift; sourceTree = "<group>"; };
 		B493897AA88B167B85448509 /* ChatViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatViewModel.swift; sourceTree = "<group>"; };
-		CE799B417AB7C3FE366802D2 /* BackendSyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackendSyncService.swift; sourceTree = "<group>"; };
 		E83C207D3DE5CC7E773DC021 /* CactusAIService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CactusAIService.swift; sourceTree = "<group>"; };
 		EFFFBEEB719005F01DAF94AF /* LocalRAGService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = LocalRAGService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -59,8 +59,6 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		65C58ECA2F94356C00767A53 /* YConstruction */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = YConstruction;
 			sourceTree = "<group>";
 		};
@@ -82,6 +80,14 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		45A0601C9636F44ADF9B46BF /* YConstruction */ = {
+			isa = PBXGroup;
+			children = (
+				99560D1B57E21FED2EB97057 /* Services */,
+			);
+			path = YConstruction;
+			sourceTree = "<group>";
+		};
 		4C4E1D7780E5DF90AF72B91C /* Services */ = {
 			isa = PBXGroup;
 			children = (
@@ -91,10 +97,8 @@
 				2F1E76C0595A35756F4B46D3 /* MockAIService.swift */,
 				E83C207D3DE5CC7E773DC021 /* CactusAIService.swift */,
 				EFFFBEEB719005F01DAF94AF /* LocalRAGService.swift */,
-				CE799B417AB7C3FE366802D2 /* BackendSyncService.swift */,
 				11EDB301B3E6357393176936 /* PhotoTurnCoordinator.swift */,
 			);
-			name = Services;
 			path = Services;
 			sourceTree = "<group>";
 		};
@@ -105,6 +109,7 @@
 				65C58EC92F94356C00767A53 /* Products */,
 				65C58EE72F94401F00767A53 /* cactus-ios.xcframework */,
 				C5EE7AAC3E563A470C052128 /* YConstructionMVP */,
+				45A0601C9636F44ADF9B46BF /* YConstruction */,
 			);
 			sourceTree = "<group>";
 		};
@@ -121,7 +126,6 @@
 			children = (
 				115B7495C4E5C4224FEC0B46 /* ChatView.swift */,
 			);
-			name = Views;
 			path = Views;
 			sourceTree = "<group>";
 		};
@@ -130,8 +134,15 @@
 			children = (
 				B493897AA88B167B85448509 /* ChatViewModel.swift */,
 			);
-			name = ViewModels;
 			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		99560D1B57E21FED2EB97057 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				91E5181AEF2E53A76334E352 /* DefectSync.swift */,
+			);
+			path = Services;
 			sourceTree = "<group>";
 		};
 		C5EE7AAC3E563A470C052128 /* YConstructionMVP */ = {
@@ -142,7 +153,6 @@
 				831AF48D2B8FED79FD99D573 /* ViewModels */,
 				6E3B9F2C009E5C781CADB3D5 /* Views */,
 			);
-			name = YConstructionMVP;
 			path = YConstructionMVP;
 			sourceTree = "<group>";
 		};
@@ -151,7 +161,6 @@
 			children = (
 				203CEFB6E11EF106929E9E0E /* Message.swift */,
 			);
-			name = Models;
 			path = Models;
 			sourceTree = "<group>";
 		};
@@ -210,7 +219,7 @@
 			mainGroup = 65C58EBF2F94356C00767A53;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				AA0001000000000000000001 /* XCRemoteSwiftPackageReference "GRDB.swift" */,
+				AA0001000000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */,
 				AA0002000000000000000001 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
 				AA0003000000000000000001 /* XCRemoteSwiftPackageReference "supabase-swift" */,
 				AA0004000000000000000001 /* XCRemoteSwiftPackageReference "GLTFKit2" */,
@@ -247,10 +256,10 @@
 				E12776F637F7B9A9966EB5AB /* MockAIService.swift in Sources */,
 				D082F119EF46AC6D9F2E73FC /* CactusAIService.swift in Sources */,
 				82BBE70BAF1780D184E76055 /* LocalRAGService.swift in Sources */,
-				7948D6E25864D26603A98A7D /* BackendSyncService.swift in Sources */,
 				C80599606245FAEF72A395F6 /* PhotoTurnCoordinator.swift in Sources */,
 				3558C72FC0857A16D8A841A3 /* ChatViewModel.swift in Sources */,
 				7631DFC94E8947BC084D427A /* ChatView.swift in Sources */,
+				289988844C5355868918AE09 /* DefectSync.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -380,7 +389,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 79V7V452RS;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -389,6 +398,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "YConstruction uses the camera so workers can attach photos of site defects to their voice reports.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "YConstruction uses the microphone so workers can describe site defects by voice.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "YConstruction saves captured defect photos to your photo library.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "YConstruction uses speech recognition to transcribe voice reports before sending them to the on-device model.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -404,7 +414,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mmarufov.YConstruction;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mmarufov.YConstructionjhu;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -428,7 +438,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = 79V7V452RS;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -437,6 +447,7 @@
 				INFOPLIST_KEY_NSCameraUsageDescription = "YConstruction uses the camera so workers can attach photos of site defects to their voice reports.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "YConstruction uses the microphone so workers can describe site defects by voice.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "YConstruction saves captured defect photos to your photo library.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "YConstruction uses speech recognition to transcribe voice reports before sending them to the on-device model.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -452,7 +463,7 @@
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mmarufov.YConstruction;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mmarufov.YConstructionjhu;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
 				SDKROOT = auto;
@@ -493,7 +504,7 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		AA0001000000000000000001 /* XCRemoteSwiftPackageReference "GRDB.swift" */ = {
+		AA0001000000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/groue/GRDB.swift";
 			requirement = {
@@ -530,7 +541,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		AA0001000000000000000002 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AA0001000000000000000001 /* XCRemoteSwiftPackageReference "GRDB.swift" */;
+			package = AA0001000000000000000001 /* XCRemoteSwiftPackageReference "GRDB" */;
 			productName = GRDB;
 		};
 		AA0002000000000000000002 /* ZIPFoundation */ = {

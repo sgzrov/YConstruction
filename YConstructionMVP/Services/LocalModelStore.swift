@@ -1,16 +1,16 @@
 import Foundation
 
-struct LocalModelInstallation: Sendable, Equatable {
+nonisolated struct LocalModelInstallation: Sendable, Equatable {
     let directoryURL: URL
     let sizeBytes: Int64
 }
 
-struct ImportedModelInstallation: Sendable, Equatable {
+nonisolated struct ImportedModelInstallation: Sendable, Equatable {
     let spec: ManagedModelSpec
     let installation: LocalModelInstallation
 }
 
-struct ManagedModelSpec: Sendable, Equatable {
+nonisolated struct ManagedModelSpec: Sendable, Equatable {
     let modelID: String
     let folderName: String
     let displayName: String
@@ -350,7 +350,7 @@ actor LocalModelStore {
     }
 }
 
-private struct ModelDirectoryInspection {
+nonisolated private struct ModelDirectoryInspection {
     let hasBaseModelFiles: Bool
     let missingBaseFiles: [String]
     let missingRuntimeAssets: [String]
@@ -360,7 +360,7 @@ private struct ModelDirectoryInspection {
     }
 }
 
-enum ModelStoreError: LocalizedError {
+nonisolated enum ModelStoreError: LocalizedError {
     case invalidModelFolder(spec: ManagedModelSpec)
     case unsupportedModelFolder
     case incompleteRuntimeAssets(spec: ManagedModelSpec, missingFiles: [String])

@@ -1,12 +1,58 @@
 import Foundation
 
-enum PhotoTurnIntent: String, Codable, Equatable, Sendable {
+nonisolated private func ycLog(_ message: String) {
+    print("[YC][PhotoTurn] \(message)")
+}
+
+nonisolated enum PhotoTurnIntent: String, Codable, Equatable, Sendable {
     case report
     case query
     case unclear
 }
 
-struct PhotoReportFields: Codable, Equatable, Sendable {
+/// Closed-set IFC vocabulary for prompt constraint. Populated from element_index.json.
+nonisolated struct IFCVocabulary: Sendable, Equatable {
+    let storeys: [String]
+    let spaces: [String]
+    let elementTypes: [String]
+    let orientations: [String]
+
+    static let empty = IFCVocabulary(storeys: [], spaces: [], elementTypes: [], orientations: [])
+
+    var isEmpty: Bool {
+        storeys.isEmpty && spaces.isEmpty && elementTypes.isEmpty && orientations.isEmpty
+    }
+
+    func promptConstraintBlock() -> String {
+        guard !isEmpty else { return "" }
+        var lines: [String] = [
+            "IMPORTANT — closed-set vocabulary. Match the user's words to these exact strings:"
+        ]
+        if !storeys.isEmpty {
+            lines.append("  \"storey\" MUST be exactly one of: \(quoted(storeys)), or null.")
+            lines.append("    (\"first floor\" → \"Level 1\"; \"second floor\" → \"Level 2\"; \"roof\" → \"Roof\"; \"foundation\"/\"basement\" → \"T/FDN\".)")
+        }
+        if !spaces.isEmpty {
+            let preview = spaces.count > 12 ? Array(spaces.prefix(12)) + ["…"] : spaces
+            lines.append("  \"space\" MUST be exactly one of: \(quoted(preview)), or null.")
+            lines.append("    (Normalize \"room 204\" → \"A204\"; \"204\" → \"A204\" when on Level 2.)")
+        }
+        if !elementTypes.isEmpty {
+            lines.append("  \"element_type\" MUST be exactly one of: \(quoted(elementTypes)), or null.")
+        }
+        if !orientations.isEmpty {
+            lines.append("  \"orientation\" MUST be exactly one of: \(quoted(orientations)), or null.")
+        }
+        lines.append("  If the worker's wording doesn't map cleanly to any listed value, use null rather than inventing one.")
+        return lines.joined(separator: "\n")
+    }
+
+    private func quoted(_ values: [String]) -> String {
+        values.map { "\"\($0)\"" }.joined(separator: ", ")
+    }
+}
+
+nonisolated struct PhotoReportFields: Codable, Equatable, Sendable {
     var defectType: String?
     var severity: String?
     var storey: String?
@@ -15,6 +61,17 @@ struct PhotoReportFields: Codable, Equatable, Sendable {
     var elementType: String?
     var guid: String?
     var aiSafetyNotes: String?
+
+    enum CodingKeys: String, CodingKey {
+        case defectType = "defect_type"
+        case severity
+        case storey
+        case space
+        case orientation
+        case elementType = "element_type"
+        case guid
+        case aiSafetyNotes = "ai_safety_notes"
+    }
 
     func merged(with newer: PhotoReportFields) -> PhotoReportFields {
         PhotoReportFields(
@@ -86,10 +143,41 @@ struct PhotoReportFields: Codable, Equatable, Sendable {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if ["unknown", "n/a", "none", "null", "blank"].contains(trimmed.lowercased()) {
+        let lower = trimmed.lowercased()
+        if ["unknown", "n/a", "none", "null", "blank"].contains(lower) {
+            return nil
+        }
+        // Reject Gemma echoes of the JSON schema placeholders themselves.
+        if Self.looksLikeSchemaEcho(lower) {
             return nil
         }
         return trimmed
+    }
+
+    private static func looksLikeSchemaEcho(_ lower: String) -> Bool {
+        let echoes: [String] = [
+            "string or null",
+            "string|null",
+            "string | null",
+            "low|medium|high|critical or null",
+            "low|medium|high|critical",
+            "low | medium | high | critical",
+            "<string>",
+            "<defect type>",
+            "<severity>",
+            "<storey>",
+            "<space>",
+            "<orientation>",
+            "<element type>",
+            "<guid>",
+            "<value>",
+            "field_name",
+            "field name",
+            "or null"
+        ]
+        if echoes.contains(lower) { return true }
+        if lower.hasPrefix("<") && lower.hasSuffix(">") { return true }
+        return false
     }
 
     static func normalizedSeverity(_ value: String?) -> String? {
@@ -123,7 +211,7 @@ struct PhotoReportFields: Codable, Equatable, Sendable {
     }
 }
 
-struct PhotoReportState: Equatable, Sendable {
+nonisolated struct PhotoReportState: Equatable, Sendable {
     let createdAt: Date
     var transcriptSnippets: [String]
     var fields: PhotoReportFields
@@ -139,7 +227,7 @@ struct PhotoReportState: Equatable, Sendable {
     }
 }
 
-struct PhotoQueryState: Equatable, Sendable {
+nonisolated struct PhotoQueryState: Equatable, Sendable {
     let createdAt: Date
     var transcriptSnippets: [String]
     var questionSummary: String?
@@ -175,35 +263,35 @@ struct PhotoQueryState: Equatable, Sendable {
     }
 }
 
-struct PhotoIntentDecision: Sendable {
+nonisolated struct PhotoIntentDecision: Sendable {
     let intent: PhotoTurnIntent
     let assistantMessage: String
 }
 
-struct PhotoReportTurnOutcome: Sendable {
+nonisolated struct PhotoReportTurnOutcome: Sendable {
     let state: PhotoReportState
     let readyToUpload: Bool
     let assistantMessage: String
     let runtimeStats: AIRuntimeStats?
 }
 
-struct PhotoQueryTurnOutcome: Sendable {
+nonisolated struct PhotoQueryTurnOutcome: Sendable {
     let state: PhotoQueryState
     let readyToSearch: Bool
     let assistantMessage: String
     let runtimeStats: AIRuntimeStats?
 }
 
-struct PhotoQueryAnswerOutcome: Sendable {
+nonisolated struct PhotoQueryAnswerOutcome: Sendable {
     let assistantMessage: String
     let summaryText: String
     let runtimeStats: AIRuntimeStats?
 }
 
 actor PhotoTurnCoordinator {
-    private struct ReportDecision: Codable {
+    nonisolated private struct ReportDecision: Codable {
         let readyToUpload: Bool
-        let assistantMessage: String
+        let assistantMessage: String?
         let blockingMissingFields: [String]
         let explicitlyUnknownFields: [String]
         let fields: PhotoReportFields
@@ -217,8 +305,8 @@ actor PhotoTurnCoordinator {
         }
     }
 
-    private struct QueryDecision: Codable {
-        struct StatePayload: Codable {
+    nonisolated private struct QueryDecision: Codable {
+        nonisolated struct StatePayload: Codable {
             let questionSummary: String?
             let storey: String?
             let space: String?
@@ -239,7 +327,7 @@ actor PhotoTurnCoordinator {
         }
 
         let readyToSearch: Bool
-        let assistantMessage: String
+        let assistantMessage: String?
         let blockingMissingFields: [String]
         let state: StatePayload
 
@@ -253,52 +341,193 @@ actor PhotoTurnCoordinator {
 
     private let aiService: any AIService
     private let ragService: LocalRAGService
+    private let vocabulary: IFCVocabulary
 
-    init(aiService: any AIService, ragService: LocalRAGService) {
+    init(
+        aiService: any AIService,
+        ragService: LocalRAGService,
+        vocabulary: IFCVocabulary = .empty
+    ) {
         self.aiService = aiService
         self.ragService = ragService
+        self.vocabulary = vocabulary
     }
 
-    func classifyIntent(transcriptHistory: [String]) async -> PhotoIntentDecision {
+    /// Cosine-similarity threshold above which a turn is routed to RAG.
+    /// The Qwen3 embedding model normalises to ~0..1, and in practice matches
+    /// on shared construction nouns land around 0.55–0.70 for real overlap.
+    private static let ragRoutingScoreThreshold: Float = 0.55
+
+    /// Decide whether the new utterance should go to RAG (query path) or to the
+    /// report path. Three layers, cheapest first:
+    ///
+    ///  0. Explicit trigger words — "report this", "log this", "new defect",
+    ///     "upload this" → REPORT. "new question", "tell me about", "why is",
+    ///     "what is", "how is", "ask about", "history of" → QUERY.
+    ///     These are opt-in speech triggers the worker says on purpose, not
+    ///     fuzzy heuristics guessing intent. Instant, no model call.
+    ///  1. Cosine gate against synced history (only when no trigger matched).
+    ///     - Below threshold → REPORT.
+    ///  2. Cosine above threshold but no explicit trigger → fire a tiny Gemma
+    ///     tiebreaker. If Gemma is unsure, the assistant asks the worker.
+    func classifyIntent(
+        transcriptHistory: [String],
+        cachedRecords: [CachedProjectChangeRecord],
+        stagedPhotoPath: String? = nil
+    ) async -> PhotoIntentDecision {
+        _ = stagedPhotoPath
         let combinedTranscript = joinHistory(transcriptHistory)
-        let heuristicIntent = Self.fallbackIntent(from: combinedTranscript)
-        if heuristicIntent != .unclear {
+        ycLog("[classifyIntent] transcript=\"\(combinedTranscript)\" cachedRecords=\(cachedRecords.count)")
+
+        // Layer 0: explicit trigger words always win, whether or not we have history.
+        if let triggered = Self.triggerIntent(from: combinedTranscript) {
+            ycLog("[classifyIntent] trigger keyword → \(triggered.rawValue)")
             return PhotoIntentDecision(
-                intent: heuristicIntent,
-                assistantMessage: Self.intentClarificationMessage(for: heuristicIntent)
+                intent: triggered,
+                assistantMessage: Self.intentClarificationMessage(for: triggered)
             )
         }
 
+        // Layer 1: no data to compare against → must be a report.
+        if cachedRecords.isEmpty {
+            ycLog("[classifyIntent] no synced history — routing to REPORT (nothing to query)")
+            return PhotoIntentDecision(
+                intent: .report,
+                assistantMessage: Self.intentClarificationMessage(for: .report)
+            )
+        }
+
+        // Layer 1b: cosine gate — does the utterance even resemble anything we've logged?
+        let topScore: Float
+        do {
+            let top = try await ragService.scoreUtterance(combinedTranscript, against: cachedRecords)
+            topScore = top?.score ?? 0
+        } catch {
+            ycLog("[classifyIntent] ERROR cosine scoring failed (\(error.localizedDescription)) — defaulting to REPORT")
+            return PhotoIntentDecision(
+                intent: .report,
+                assistantMessage: Self.intentClarificationMessage(for: .report)
+            )
+        }
+        ycLog("[classifyIntent] cosine topScore=\(String(format: "%.3f", topScore)) threshold=\(Self.ragRoutingScoreThreshold)")
+
+        if topScore < Self.ragRoutingScoreThreshold {
+            ycLog("[classifyIntent] cosine below threshold — routing to REPORT (no semantic match)")
+            return PhotoIntentDecision(
+                intent: .report,
+                assistantMessage: Self.intentClarificationMessage(for: .report)
+            )
+        }
+
+        // Layer 2: topic matches but no explicit trigger — ask Gemma.
         let prompt = """
-        Classify this staged-photo construction turn.
-        Reply with one lowercase word only: report, query, or unclear.
+        A construction worker just took a photo of a site and said:
+        "\(combinedTranscript)"
 
-        \(combinedTranscript)
+        Is this worker REPORTING a new defect to log, or QUERYING an existing issue from prior reports?
+        Reply with exactly one lowercase word: report or query.
         """
-
+        let started = Date()
         do {
             let response = try await aiService.send(
-                request: AIRequest(prompt: prompt, maxTokens: 8),
+                request: AIRequest(prompt: prompt, maxTokens: 4),
                 conversation: []
             )
-            let intent = Self.parseIntent(from: response.text) ?? Self.fallbackIntent(from: combinedTranscript)
-            return PhotoIntentDecision(
-                intent: intent,
-                assistantMessage: Self.intentClarificationMessage(for: intent)
-            )
+            let elapsed = Date().timeIntervalSince(started)
+            let replyWord = response.text
+                .lowercased()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .first(where: { !$0.isEmpty }) ?? ""
+            ycLog("[classifyIntent] Gemma tiebreaker in \(String(format: "%.2f", elapsed))s → \"\(replyWord)\"")
+
+            switch replyWord {
+            case "query":
+                return PhotoIntentDecision(
+                    intent: .query,
+                    assistantMessage: Self.intentClarificationMessage(for: .query)
+                )
+            case "report":
+                return PhotoIntentDecision(
+                    intent: .report,
+                    assistantMessage: Self.intentClarificationMessage(for: .report)
+                )
+            default:
+                ycLog("[classifyIntent] Gemma tiebreaker unclear → asking user")
+                return PhotoIntentDecision(
+                    intent: .unclear,
+                    assistantMessage: Self.intentClarificationMessage(for: .unclear)
+                )
+            }
         } catch {
-            let intent = Self.fallbackIntent(from: combinedTranscript)
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[classifyIntent] ERROR Gemma tiebreaker failed after \(String(format: "%.2f", elapsed))s error=\(error.localizedDescription) — defaulting to REPORT")
             return PhotoIntentDecision(
-                intent: intent,
-                assistantMessage: Self.intentClarificationMessage(for: intent)
+                intent: .report,
+                assistantMessage: Self.intentClarificationMessage(for: .report)
             )
         }
+    }
+
+    /// Opt-in trigger keywords. Returns nil when the utterance doesn't contain
+    /// an explicit cue so callers fall through to cosine/Gemma routing.
+    private static func triggerIntent(from text: String) -> PhotoTurnIntent? {
+        let lower = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !lower.isEmpty else { return nil }
+
+        let reportTriggers: [String] = [
+            "report this", "report it", "report that", "report the",
+            "log this", "log it", "log that",
+            "save this", "save it", "save that", "save to",
+            "upload this", "upload it", "upload that", "upload to",
+            "record this", "record it", "record that",
+            "document this", "document it", "document that",
+            "note this", "note that", "write this down",
+            "i want to report", "i need to report",
+            "i would like to report", "i'd like to report", "id like to report",
+            "i want to log", "i need to log",
+            "i want to upload", "i'd like to upload", "id like to upload",
+            "new report", "new defect", "new issue", "new finding",
+            "found a", "i found", "discovered a", "i discovered",
+            "there is a new", "there's a new"
+        ]
+        if reportTriggers.contains(where: { lower.contains($0) }) {
+            return .report
+        }
+
+        let queryTriggers: [String] = [
+            "new question", "i have a question", "i've got a question",
+            "ive got a question", "i have questions",
+            "question about", "i want to ask", "i'd like to ask",
+            "id like to ask", "let me ask", "can i ask",
+            "ask about", "ask a question",
+            "tell me about", "tell me more", "tell me what",
+            "what is", "what was", "what happened", "what's this",
+            "what is this", "whats this", "what about",
+            "why is", "why was", "why did", "why does",
+            "how is", "how was", "how did", "how does",
+            "when was", "when did", "when is",
+            "who is", "who was", "who did", "who reported", "who logged",
+            "where is", "where was",
+            "do you know", "does anybody know", "does anyone know",
+            "any info", "any information", "more info", "any details",
+            "more details", "any history", "the history",
+            "already reported", "already logged", "already there"
+        ]
+        if queryTriggers.contains(where: { lower.contains($0) }) {
+            return .query
+        }
+
+        return nil
     }
 
     func processReportTurn(
         existingState: PhotoReportState?,
         newTranscript: String,
-        createdAt: Date
+        createdAt: Date,
+        stagedPhotoPath: String? = nil
     ) async throws -> PhotoReportTurnOutcome {
         var state = existingState ?? PhotoReportState(
             createdAt: createdAt,
@@ -311,6 +540,57 @@ actor PhotoTurnCoordinator {
         state.transcriptSnippets.append(newTranscript)
         applyReportHeuristics(to: &state, newTranscript: newTranscript)
 
+        // Shortcut: if the heuristics already filled every required field with a
+        // real (non-echo, non-unknown) value, there's nothing for Gemma to add.
+        // Skip the 10–30s model call and upload immediately.
+        if blockingReportFields(for: state).isEmpty {
+            ycLog("[processReportTurn] heuristic-confident: all required fields filled — skipping Gemma")
+            state.lastBlockingFields = []
+            state.repeatedFollowUpCount = 0
+            return PhotoReportTurnOutcome(
+                state: state,
+                readyToUpload: true,
+                assistantMessage: "Got it — uploading.",
+                runtimeStats: nil
+            )
+        }
+
+        var runtimeStats: AIRuntimeStats?
+        var assistantMessageOverride: String?
+        let prompt = makeReportPrompt(from: state)
+        let imagesEnabled = LocalModelStore.supportsCameraContext
+        let images = (imagesEnabled ? stagedPhotoPath.map { [$0] } : nil) ?? []
+        let started = Date()
+        ycLog("[processReportTurn] sending Gemma call images=\(images.count) maxTokens=160 transcript=\"\(state.combinedTranscript)\"")
+
+        do {
+            let response = try await aiService.send(
+                request: AIRequest(prompt: prompt, imagePaths: images, maxTokens: 160),
+                conversation: []
+            )
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[processReportTurn] Gemma replied in \(String(format: "%.2f", elapsed))s textLen=\(response.text.count) preview=\"\(response.text.prefix(200))\"")
+            runtimeStats = response.runtimeStats
+            if let decision = try? decodeReportDecision(from: response.text) {
+                ycLog("[processReportTurn] decoded JSON: ready=\(decision.readyToUpload) blocking=\(decision.blockingMissingFields.joined(separator: ","))")
+                state.fields = state.fields.merged(with: decision.fields)
+                state.explicitlyUnknownFields.formUnion(
+                    decision.explicitlyUnknownFields.map(Self.normalizedFieldName)
+                )
+                state.explicitlyUnknownFields.subtract(resolvedFieldNames(from: state.fields))
+                let trimmedAssistantMessage = (decision.assistantMessage ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedAssistantMessage.isEmpty {
+                    assistantMessageOverride = trimmedAssistantMessage
+                }
+            } else {
+                ycLog("[processReportTurn] ERROR Gemma response was not valid JSON; falling back to heuristic")
+            }
+        } catch {
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[processReportTurn] ERROR Gemma failed after \(String(format: "%.2f", elapsed))s error=\(error.localizedDescription)")
+        }
+
         let blockingFields = blockingReportFields(for: state)
         let normalizedBlockingFields = blockingFields.sorted()
         if normalizedBlockingFields.isEmpty {
@@ -322,23 +602,31 @@ actor PhotoTurnCoordinator {
             state.lastBlockingFields = normalizedBlockingFields
             state.repeatedFollowUpCount = 0
         }
-        let readyToUpload = blockingFields.isEmpty
-        let assistantMessage = readyToUpload
-            ? "I have enough to upload this report."
-            : reportFollowUpMessage(for: blockingFields, state: state)
+
+        let finalBlockingFields = blockingReportFields(for: state)
+        let readyToUpload = finalBlockingFields.isEmpty
+        let assistantMessage: String
+        if readyToUpload {
+            assistantMessage = "I have enough to upload this report."
+        } else if let override = assistantMessageOverride {
+            assistantMessage = override
+        } else {
+            assistantMessage = reportFollowUpMessage(for: finalBlockingFields, state: state)
+        }
 
         return PhotoReportTurnOutcome(
             state: state,
             readyToUpload: readyToUpload,
             assistantMessage: assistantMessage,
-            runtimeStats: nil
+            runtimeStats: runtimeStats
         )
     }
 
     func processQueryTurn(
         existingState: PhotoQueryState?,
         newTranscript: String,
-        createdAt: Date
+        createdAt: Date,
+        stagedPhotoPath: String? = nil
     ) async throws -> PhotoQueryTurnOutcome {
         var state = existingState ?? PhotoQueryState(
             createdAt: createdAt,
@@ -354,54 +642,165 @@ actor PhotoTurnCoordinator {
         state.transcriptSnippets.append(newTranscript)
         applyQueryHeuristics(to: &state)
 
+        var runtimeStats: AIRuntimeStats?
+        var assistantMessageOverride: String?
+        let prompt = makeQueryPrompt(from: state)
+        let imagesEnabled = LocalModelStore.supportsCameraContext
+        let images = (imagesEnabled ? stagedPhotoPath.map { [$0] } : nil) ?? []
+        let started = Date()
+        ycLog("[processQueryTurn] sending Gemma call images=\(images.count) maxTokens=160 transcript=\"\(state.combinedTranscript)\"")
+
+        do {
+            let response = try await aiService.send(
+                request: AIRequest(prompt: prompt, imagePaths: images, maxTokens: 160),
+                conversation: []
+            )
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[processQueryTurn] Gemma replied in \(String(format: "%.2f", elapsed))s textLen=\(response.text.count) preview=\"\(response.text.prefix(200))\"")
+            runtimeStats = response.runtimeStats
+            if let decision = try? decodeQueryDecision(from: response.text) {
+                ycLog("[processQueryTurn] decoded JSON: ready=\(decision.readyToSearch) summary=\"\(decision.state.questionSummary ?? "nil")\"")
+                state.questionSummary = preferred(decision.state.questionSummary, state.questionSummary)
+                state.storey = preferred(decision.state.storey, state.storey)
+                state.space = preferred(decision.state.space, state.space)
+                state.orientation = preferred(decision.state.orientation, state.orientation)
+                state.elementType = preferred(decision.state.elementType, state.elementType)
+                state.timeframeHint = preferred(decision.state.timeframeHint, state.timeframeHint)
+                state.ambiguityNote = preferred(decision.state.ambiguityNote, state.ambiguityNote)
+                let trimmedAssistantMessage = (decision.assistantMessage ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedAssistantMessage.isEmpty {
+                    assistantMessageOverride = trimmedAssistantMessage
+                }
+            } else {
+                ycLog("[processQueryTurn] ERROR Gemma response was not valid JSON; falling back to heuristic")
+            }
+        } catch {
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[processQueryTurn] ERROR Gemma failed after \(String(format: "%.2f", elapsed))s error=\(error.localizedDescription)")
+        }
+
         let blockingFields = blockingQueryFields(for: state)
         let readyToSearch = blockingFields.isEmpty
-        let assistantMessage = readyToSearch
-            ? "Searching the synced report history locally."
-            : queryFollowUpMessage(for: blockingFields, state: state)
+        let assistantMessage: String
+        if readyToSearch {
+            assistantMessage = "Searching the synced report history locally."
+        } else if let override = assistantMessageOverride {
+            assistantMessage = override
+        } else {
+            assistantMessage = queryFollowUpMessage(for: blockingFields, state: state)
+        }
 
         return PhotoQueryTurnOutcome(
             state: state,
             readyToSearch: readyToSearch,
             assistantMessage: assistantMessage,
-            runtimeStats: nil
+            runtimeStats: runtimeStats
         )
     }
 
-    func pivotIntent(for newTranscript: String, currentIntent: PhotoTurnIntent) -> PhotoTurnIntent? {
-        let normalized = newTranscript
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
+    /// Decide if a mid-session turn should flip the existing intent, based on
+    /// cosine similarity against synced history rather than keyword matches.
+    ///
+    /// - Returns `.query` when the user is currently in a report flow but the
+    ///   new utterance semantically matches synced history above threshold.
+    /// - Returns `.report` when the user is currently in a query flow but the
+    ///   new utterance no longer matches anything in history (score drops).
+    /// - Returns `nil` to keep the current intent.
+    func pivotIntent(
+        for newTranscript: String,
+        currentIntent: PhotoTurnIntent,
+        cachedRecords: [CachedProjectChangeRecord]
+    ) async -> PhotoTurnIntent? {
+        let normalized = newTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        guard !cachedRecords.isEmpty else { return nil }
 
-        guard !normalized.isEmpty else {
-            return nil
+        // Explicit trigger words always win mid-session too.
+        if let triggered = Self.triggerIntent(from: normalized) {
+            ycLog("[pivotIntent] trigger keyword → \(triggered.rawValue) (currentIntent=\(currentIntent.rawValue))")
+            return triggered == currentIntent ? nil : triggered
         }
 
-        switch currentIntent {
-        case .report:
-            return Self.looksLikeQuestion(normalized) ? .query : nil
-        case .query:
-            return Self.looksLikeExplicitReport(normalized) ? .report : nil
-        case .unclear:
+        do {
+            let top = try await ragService.scoreUtterance(normalized, against: cachedRecords)
+            let score = top?.score ?? 0
+            ycLog("[pivotIntent] currentIntent=\(currentIntent.rawValue) utterance=\"\(normalized)\" topScore=\(String(format: "%.3f", score))")
+
+            switch currentIntent {
+            case .report:
+                // Topic must overlap AND Gemma must agree this is a question.
+                // Avoids "user keeps describing new damage that resembles old
+                // damage" thrashing into the query path.
+                guard score >= Self.ragRoutingScoreThreshold else { return nil }
+                return (try await gemmaStatementVsQuestion(normalized)) == .query ? .query : nil
+            case .query:
+                // Drop out of RAG only if the new utterance is clearly different
+                // from anything in history. Hysteresis prevents flapping.
+                return score < (Self.ragRoutingScoreThreshold - 0.1) ? .report : nil
+            case .unclear:
+                return nil
+            }
+        } catch {
+            ycLog("[pivotIntent] ERROR scoring utterance (\(error.localizedDescription)) — no pivot")
             return nil
+        }
+    }
+
+    /// Shared Gemma statement-vs-question classifier. 4 tokens, text-only.
+    /// Used by both `classifyIntent` and `pivotIntent` when cosine already
+    /// says the topic matches, so we only pay the ~2s Gemma cost when needed.
+    private func gemmaStatementVsQuestion(_ utterance: String) async throws -> PhotoTurnIntent {
+        let prompt = """
+        A construction worker said: "\(utterance)"
+
+        Is this a REPORT of a new defect to log, or a QUERY about an existing one?
+        Reply with exactly one lowercase word: report or query.
+        """
+        let started = Date()
+        let response = try await aiService.send(
+            request: AIRequest(prompt: prompt, maxTokens: 4),
+            conversation: []
+        )
+        let elapsed = Date().timeIntervalSince(started)
+        let replyWord = response.text
+            .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .first(where: { !$0.isEmpty }) ?? ""
+        ycLog("[pivotIntent] Gemma tiebreaker in \(String(format: "%.2f", elapsed))s → \"\(replyWord)\"")
+        switch replyWord {
+        case "query": return .query
+        case "report": return .report
+        default: return .unclear
         }
     }
 
     func answerQuery(
         state: PhotoQueryState,
-        cachedRecords: [CachedProjectChangeRecord]
+        cachedRecords: [CachedProjectChangeRecord],
+        stagedPhotoPath: String? = nil,
+        onToken: (@Sendable (String) -> Void)? = nil
     ) async throws -> PhotoQueryAnswerOutcome {
+        ycLog("[answerQuery] RAG INVOKED for query=\"\(state.questionSummary ?? state.combinedTranscript)\" cachedRecords=\(cachedRecords.count)")
         let indexedCount = try await ragService.refreshIndex(from: cachedRecords)
         let queryText = queryText(for: state)
-        let queryResult = try await ragService.query(question: queryText, topK: 3, scoreThreshold: 0.60)
+        // Use the same threshold as routing, so "routed to RAG" → "found evidence".
+        let queryResult = try await ragService.query(
+            question: queryText,
+            topK: 3,
+            scoreThreshold: Self.ragRoutingScoreThreshold
+        )
 
         guard !queryResult.matches.isEmpty else {
+            ycLog("[answerQuery] RAG returned 0 matches above threshold — skipping Gemma, returning empty-evidence reply")
             return PhotoQueryAnswerOutcome(
                 assistantMessage: "I couldn't find a matching prior report in the synced history on this iPhone, so I do not have enough evidence to explain this yet.",
                 summaryText: "Local question search checked \(indexedCount) synced report(s) and found no strong evidence match.",
                 runtimeStats: nil
             )
         }
+        ycLog("[answerQuery] RAG matched \(queryResult.matches.count) record(s); sending to Gemma with evidence")
 
         let evidence = queryResult.matches
             .prefix(3)
@@ -432,10 +831,24 @@ actor PhotoTurnCoordinator {
         \(evidence)
         """
 
-        let response = try await aiService.send(
-            request: AIRequest(prompt: prompt, maxTokens: 96),
-            conversation: []
-        )
+        let imagesEnabled = LocalModelStore.supportsCameraContext
+        let images = (imagesEnabled ? stagedPhotoPath.map { [$0] } : nil) ?? []
+        let started = Date()
+        let topScore = queryResult.matches.first?.score ?? 0
+        ycLog("[answerQuery] sending Gemma call indexed=\(indexedCount) matches=\(queryResult.matches.count) topScore=\(String(format: "%.3f", topScore)) images=\(images.count) streaming=\(onToken != nil)")
+        let request = AIRequest(prompt: prompt, imagePaths: images, maxTokens: 160)
+        let response: AIResponse
+        if let onToken {
+            response = try await aiService.sendStreaming(
+                request: request,
+                conversation: [],
+                onToken: onToken
+            )
+        } else {
+            response = try await aiService.send(request: request, conversation: [])
+        }
+        let elapsed = Date().timeIntervalSince(started)
+        ycLog("[answerQuery] Gemma replied in \(String(format: "%.2f", elapsed))s textLen=\(response.text.count)")
 
         return PhotoQueryAnswerOutcome(
             assistantMessage: response.text,
@@ -445,92 +858,46 @@ actor PhotoTurnCoordinator {
     }
 
     private func makeReportPrompt(from state: PhotoReportState) -> String {
-        """
-        You are completing a staged-photo construction report for these Supabase columns:
-        - defect_type
-        - severity
-        - storey
-        - space
-        - orientation
-        - element_type
-        - guid
-        - ai_safety_notes
+        let vocabBlock = vocabulary.promptConstraintBlock()
+        let vocabSection = vocabBlock.isEmpty ? "" : "\n\(vocabBlock)\n"
+        let known = state.fields.compactSummaryLines().joined(separator: ", ")
+        let unknown = state.explicitlyUnknownFields.sorted().joined(separator: ", ")
+        return """
+        Construction defect report. Output JSON only.
 
-        You cannot inspect the image pixels. Use only the worker's spoken words. You may refer to the staged photo conversationally.
+        Transcript: \(state.combinedTranscript)
+        Known: \(known)
+        Marked unknown: \(unknown)
+        \(vocabSection)
+        Required: defect_type, severity (low|medium|high|critical), storey, element_type. Optional: space, orientation, guid, ai_safety_notes.
 
-        Current known values:
-        \(state.fields.compactSummaryLines().joined(separator: "\n"))
+        Use real values from the transcript or null. NEVER write "string", "or null", "<...>", or schema placeholders as values.
 
-        Explicitly unknown fields:
-        \(state.explicitlyUnknownFields.sorted().joined(separator: ", "))
+        If a required field is missing, set ready_to_upload=false and ask one short follow-up question in assistant_message. Otherwise ready_to_upload=true.
 
-        Worker transcript history:
-        \(state.combinedTranscript)
-
-        Return ONLY valid JSON with this exact shape:
-        {
-          "ready_to_upload": true,
-          "assistant_message": "short message",
-          "blocking_missing_fields": ["field_name"],
-          "explicitly_unknown_fields": ["field_name"],
-          "fields": {
-            "defect_type": "string or null",
-            "severity": "low|medium|high|critical or null",
-            "storey": "string or null",
-            "space": "string or null",
-            "orientation": "string or null",
-            "element_type": "string or null",
-            "guid": "string or null",
-            "ai_safety_notes": "string or null"
-          }
-        }
-
-        Rules:
-        - Merge the newest answer with the earlier transcript history.
-        - Ask at most two concise follow-up questions when detail is still missing.
-        - If the worker says unknown, not sure, no, or blank for a field, keep it null and include that field in explicitly_unknown_fields.
-        - Try to fill defect_type, severity, storey, and element_type first.
-        - space, orientation, guid, and ai_safety_notes are optional.
-        - If required fields are still unknown and not explicitly marked unknown, set ready_to_upload to false.
-        - If enough information is present, set ready_to_upload to true.
-        - Do not mention JSON.
+        Example output:
+        {"ready_to_upload":false,"assistant_message":"How severe is the crack: low, medium, high, or critical?","blocking_missing_fields":["severity"],"explicitly_unknown_fields":[],"fields":{"defect_type":"crack","severity":null,"storey":"Level 1","space":null,"orientation":"west","element_type":"wall","guid":null,"ai_safety_notes":null}}
         """
     }
 
     private func makeQueryPrompt(from state: PhotoQueryState) -> String {
-        """
-        You are preparing a staged-photo construction question for local report search.
+        let vocabBlock = vocabulary.promptConstraintBlock()
+        let vocabSection = vocabBlock.isEmpty ? "" : "\n\(vocabBlock)\n"
+        let known = state.compactSummaryLines().joined(separator: ", ")
+        return """
+        Worker question for prior-report search. Output JSON only.
 
-        The worker is asking about an existing issue. You cannot inspect the image pixels. Use only the transcript.
+        Transcript: \(state.combinedTranscript)
+        Known: \(known)
+        \(vocabSection)
+        question_summary should restate the question in one sentence. storey, space, orientation, element_type, timeframe_hint, ambiguity_note are optional.
 
-        Current known values:
-        \(state.compactSummaryLines().joined(separator: "\n"))
+        Use real values or null. NEVER write "string", "or null", "<...>", or schema placeholders as values.
 
-        Worker transcript history:
-        \(state.combinedTranscript)
+        If the question is searchable, set ready_to_search=true. Otherwise ask one short follow-up in assistant_message.
 
-        Return ONLY valid JSON with this exact shape:
-        {
-          "ready_to_search": true,
-          "assistant_message": "short message",
-          "blocking_missing_fields": ["field_name"],
-          "state": {
-            "question_summary": "string or null",
-            "storey": "string or null",
-            "space": "string or null",
-            "orientation": "string or null",
-            "element_type": "string or null",
-            "timeframe_hint": "string or null",
-            "ambiguity_note": "string or null"
-          }
-        }
-
-        Rules:
-        - question_summary should restate the worker's question for search.
-        - storey, space, orientation, element_type, and timeframe_hint are optional hints.
-        - Ask a short follow-up only if the question is too vague to search.
-        - If the question is already usable, set ready_to_search to true.
-        - Do not mention JSON.
+        Example output:
+        {"ready_to_search":true,"assistant_message":"Searching prior reports.","blocking_missing_fields":[],"state":{"question_summary":"Why is there a crack on the west wall on level 1?","storey":"Level 1","space":null,"orientation":"west","element_type":"wall","timeframe_hint":null,"ambiguity_note":null}}
         """
     }
 
@@ -538,14 +905,24 @@ actor PhotoTurnCoordinator {
         guard let jsonText = extractJSONObject(from: rawText) else {
             return nil
         }
-        return try JSONDecoder().decode(ReportDecision.self, from: Data(jsonText.utf8))
+        do {
+            return try JSONDecoder().decode(ReportDecision.self, from: Data(jsonText.utf8))
+        } catch {
+            ycLog("[decodeReportDecision] decode error: \(error)")
+            throw error
+        }
     }
 
     private func decodeQueryDecision(from rawText: String) throws -> QueryDecision? {
         guard let jsonText = extractJSONObject(from: rawText) else {
             return nil
         }
-        return try JSONDecoder().decode(QueryDecision.self, from: Data(jsonText.utf8))
+        do {
+            return try JSONDecoder().decode(QueryDecision.self, from: Data(jsonText.utf8))
+        } catch {
+            ycLog("[decodeQueryDecision] decode error: \(error)")
+            throw error
+        }
     }
 
     private func extractJSONObject(from rawText: String) -> String? {
@@ -668,39 +1045,6 @@ actor PhotoTurnCoordinator {
         .joined(separator: "\n")
     }
 
-    private static func parseIntent(from rawText: String) -> PhotoTurnIntent? {
-        let normalized = rawText
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        let tokens = normalized
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
-
-        for token in tokens {
-            if let intent = PhotoTurnIntent(rawValue: token) {
-                return intent
-            }
-        }
-        return nil
-    }
-
-    private static func fallbackIntent(from text: String) -> PhotoTurnIntent {
-        let lowercased = text.lowercased()
-        if Self.containsAny(lowercased, [
-            "why", "when", "how", "what", "who", "where", "did", "does", "is there", "was there", "what happened"
-        ]) || lowercased.contains("?") {
-            return .query
-        }
-
-        if Self.containsAny(lowercased, [
-            "report", "found", "there is", "there's", "i made", "i found", "hole", "crack", "leak", "broken", "damage", "issue", "problem"
-        ]) {
-            return .report
-        }
-
-        return .unclear
-    }
-
     private static func intentClarificationMessage(for intent: PhotoTurnIntent) -> String {
         switch intent {
         case .report:
@@ -791,30 +1135,54 @@ actor PhotoTurnCoordinator {
         if Self.containsAny(lowercased, ["roof", "rooftop", "azotea"]) {
             return "Roof"
         }
-        if Self.containsAny(lowercased, ["second floor", "2nd floor", "level 2", "second level", "upstairs", "segundo piso", "segundo nivel"]) {
+        if Self.containsAny(lowercased, [
+            "third floor", "3rd floor", "level 3", "level three", "third level", "tercer piso"
+        ]) {
+            return "Level 3"
+        }
+        if Self.containsAny(lowercased, [
+            "second floor", "2nd floor", "level 2", "level two", "second level",
+            "upstairs", "segundo piso", "segundo nivel"
+        ]) {
             return "Level 2"
         }
         if Self.containsAny(lowercased, ["basement", "foundation", "fundacion", "fundación", "t/fdn"]) {
             return "T/FDN"
         }
-        if Self.containsAny(lowercased, ["first floor", "1st floor", "level 1", "main floor", "ground floor"]) {
+        if Self.containsAny(lowercased, [
+            "first floor", "1st floor", "level 1", "level one", "first level",
+            "main floor", "ground floor", "primer piso", "primer nivel"
+        ]) {
             return "Level 1"
         }
         return nil
     }
 
     private func fallbackElementType(from text: String) -> String? {
-        let lowercased = text.lowercased()
+        // Strip storey-style "first floor / second floor / level 1 floor" so they
+        // don't get classified as the "floor" element.
+        let storeyAdjacentFloorPatterns = [
+            "first floor", "1st floor",
+            "second floor", "2nd floor",
+            "third floor", "3rd floor",
+            "ground floor", "main floor",
+            "level 1 floor", "level 2 floor", "level 3 floor"
+        ]
+        var lowercased = text.lowercased()
+        for pattern in storeyAdjacentFloorPatterns {
+            lowercased = lowercased.replacingOccurrences(of: pattern, with: " ")
+        }
+
         let orderedMatches: [(String, [String])] = [
             ("window", ["window", "glass", "pane", "ventana"]),
             ("door", ["door", "frame", "hinge", "puerta"]),
+            ("wall", ["wall", "drywall", "stud", "muro", "pared"]),
             ("ceiling", ["ceiling", "drywall ceiling", "techo interior"]),
-            ("floor", ["floor", "tile", "slab", "piso"]),
             ("roof", ["roof", "rooftop", "azotea"]),
             ("beam", ["beam", "viga"]),
             ("column", ["column", "pillar", "columna"]),
             ("pipe", ["pipe", "plumbing", "tuberia", "tubería"]),
-            ("wall", ["wall", "drywall", "stud", "muro", "pared"])
+            ("floor", ["floor", "tile", "slab", "piso"])
         ]
 
         for (candidate, patterns) in orderedMatches where Self.containsAny(lowercased, patterns) {
@@ -1020,7 +1388,8 @@ actor PhotoTurnCoordinator {
 
     private func inferHoleSeverityFromDimensions(in text: String) -> String? {
         let lowercased = text.lowercased()
-        guard Self.containsAny(lowercased, ["hole", "opening", "agujero", "hueco", "depth", "deep", "inch", "inches", "cm", "foot", "feet"]) else {
+        // Only infer hole severity when the worker actually describes a hole or opening.
+        guard Self.containsAny(lowercased, ["hole", "opening", "agujero", "hueco", "puncture", "depth", "deep", "all the way through"]) else {
             return nil
         }
 
@@ -1047,7 +1416,12 @@ actor PhotoTurnCoordinator {
     }
 
     private func holeDimensionNote(from text: String) -> String? {
-        guard let measuredInches = extractApproximateInches(from: text.lowercased()) else {
+        let lowercased = text.lowercased()
+        // Don't tag every "10 feet" sentence as a hole — require explicit opening context.
+        guard Self.containsAny(lowercased, ["hole", "opening", "agujero", "hueco", "puncture", "depth", "deep", "all the way through"]) else {
+            return nil
+        }
+        guard let measuredInches = extractApproximateInches(from: lowercased) else {
             return nil
         }
 
@@ -1160,66 +1534,4 @@ actor PhotoTurnCoordinator {
         ].contains(normalized)
     }
 
-    private static func looksLikeQuestion(_ text: String) -> Bool {
-        if text.contains("?") {
-            return true
-        }
-
-        let questionPrefixes = [
-            "why",
-            "what",
-            "when",
-            "how",
-            "who",
-            "where",
-            "did",
-            "does",
-            "do ",
-            "is ",
-            "was ",
-            "are ",
-            "can ",
-            "could ",
-            "should ",
-            "would "
-        ]
-
-        if questionPrefixes.contains(where: { text.hasPrefix($0) }) {
-            return true
-        }
-
-        return containsAny(text, [
-            "i want to ask",
-            "i am asking",
-            "i'm asking",
-            "i have a question",
-            "question about",
-            "want to know",
-            "need to know"
-        ])
-    }
-
-    private static func looksLikeExplicitReport(_ text: String) -> Bool {
-        guard !looksLikeQuestion(text) else {
-            return false
-        }
-
-        return containsAny(text, [
-            "report this",
-            "report it",
-            "new report",
-            "for a report",
-            "this is a report",
-            "log this",
-            "log it",
-            "save this",
-            "save it",
-            "upload this",
-            "upload it",
-            "i want to report",
-            "i need to report",
-            "this is a new issue",
-            "it's a new issue"
-        ])
-    }
 }

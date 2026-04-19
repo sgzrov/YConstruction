@@ -8,6 +8,7 @@ struct ChatView: View {
     @StateObject private var viewModel: ChatViewModel
     @StateObject private var cameraController = CameraSessionController()
     @State private var isImportingModel = false
+    @State private var showingCameraPopup = false
 
     @MainActor
     init(viewModel: ChatViewModel) {
@@ -20,12 +21,27 @@ struct ChatView: View {
     }
 
     var body: some View {
-        ZStack {
-            cameraLayer
-            gradientOverlay
-            content
+        content
+        .overlay {
+            if showingCameraPopup {
+                cameraPopup
+                    .transition(.scale(scale: 0.92).combined(with: .opacity))
+            }
         }
-        .background(.black)
+        .overlay(alignment: .top) {
+            if let toast = viewModel.toastMessage {
+                toastBanner(text: toast)
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: showingCameraPopup)
+        .animation(.easeInOut(duration: 0.22), value: viewModel.toastMessage)
+        .onChange(of: viewModel.hasStagedPhoto) { _, hasPhoto in
+            if hasPhoto && showingCameraPopup {
+                showingCameraPopup = false
+            }
+        }
         .task {
             viewModel.setCameraSnapshotProvider {
                 await cameraController.captureStillImage()
@@ -73,141 +89,34 @@ struct ChatView: View {
         }
     }
 
-    private var cameraLayer: some View {
-        Group {
-            if viewModel.canCaptureSitePhoto, viewModel.isCameraContextEnabled, cameraController.isReady {
-                CameraPreview(session: cameraController.session)
-                    .ignoresSafeArea()
-            } else {
-                Rectangle()
-                    .fill(Color.black)
-                    .overlay {
-                        VStack(spacing: 12) {
-                            Image(systemName: viewModel.isCameraContextEnabled ? "camera.viewfinder" : "camera.fill")
-                                .font(.system(size: 32))
-                            Text(cameraStatusOverlayText)
-                                .multilineTextAlignment(.center)
-                                .foregroundStyle(.white.opacity(0.85))
-                        }
-                        .padding(24)
-                    }
-                    .ignoresSafeArea()
-            }
-        }
-    }
-
-    private var gradientOverlay: some View {
-        LinearGradient(
-            colors: [
-                Color.black.opacity(0.65),
-                Color.clear,
-                Color.black.opacity(0.8)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .ignoresSafeArea()
-    }
-
     private var content: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            topBar
-            Spacer()
-            bottomPanel
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 20)
-    }
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 12) {
+                statusCard(title: "General Model", detail: "Gemma 3n E2B loaded", showCheck: true)
+                statusCard(title: "RAG Model", detail: "Qwen3 Embedding 0.6B loaded", showCheck: true)
+                statusCard(title: "Cloud Surfacing", detail: "Supabase - Loaded", showCheck: false)
+                statusCard(title: "Cloud Sync", detail: cloudSyncDetail, showCheck: false)
 
-    private var topBar: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("YConstruction Field Copilot")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.white)
-
-            HStack(spacing: 10) {
-                StatusPill(
-                    label: cameraPillLabel,
-                    systemImage: cameraPillSystemImage,
-                    tint: cameraPillTint
-                )
-
-                StatusPill(
-                    label: modelPillLabel,
-                    systemImage: modelPillSystemImage,
-                    tint: modelPillTint
-                )
-
-                StatusPill(
-                    label: syncPillLabel,
-                    systemImage: syncPillSystemImage,
-                    tint: syncPillTint
-                )
+                actionButtons
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 28)
+            .padding(.bottom, 24)
         }
     }
 
-    private var bottomPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            infoCard(title: "Local Model", text: viewModel.modelStatusText)
-            infoCard(title: "Local Search", text: viewModel.localSearchStatusText)
-            infoCard(title: "Backend Contract", text: viewModel.backendStatusText)
-            infoCard(title: "Backend Sync", text: backendSyncDescription)
-            infoCard(title: "Site Photo", text: cameraContextDescription)
-
-            if let modelSetupMessage = viewModel.modelSetupMessage {
-                modelSetupCard(text: modelSetupMessage)
-            }
-
-            if let backendErrorMessage = viewModel.backendErrorMessage {
-                infoCard(title: "Backend Error", text: backendErrorMessage)
-            }
-
-            if let permissionMessage = viewModel.permissionMessage {
-                infoCard(title: "Permission Needed", text: permissionMessage)
-            }
-
-            if !viewModel.lastInputSummary.isEmpty {
-                infoCard(title: "Last Capture", text: viewModel.lastInputSummary)
-            }
-
-            if let lastRuntimeText = viewModel.lastRuntimeText {
-                infoCard(title: "Last Runtime", text: lastRuntimeText)
-            }
-
-            if !viewModel.latestReply.isEmpty {
-                infoCard(title: "Assistant", text: viewModel.latestReply)
-            }
-
-            Toggle(isOn: $viewModel.isCameraContextEnabled) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Capture a site photo")
-                        .foregroundStyle(.white)
-                    Text(
-                        "Optional. Stage one photo for a new report or for a local question against synced history. Voice still works fully with the camera off."
-                    )
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.75))
-                }
-            }
-            .tint(.white)
-
-            Text(viewModel.statusText)
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.white.opacity(0.85))
-
+    private var actionButtons: some View {
+        GlassEffectContainer(spacing: 16) {
             HStack(spacing: 16) {
                 Button(role: .destructive) {
-                    viewModel.clearConversation()
+                    viewModel.undoLastAction()
                 } label: {
                     Image(systemName: "arrow.counterclockwise")
                         .font(.title3)
                         .frame(width: 52, height: 52)
-                        .background(.white.opacity(0.14))
-                        .clipShape(Circle())
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
 
                 Button {
                     viewModel.syncNow()
@@ -215,42 +124,49 @@ struct ChatView: View {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.title3)
                         .frame(width: 52, height: 52)
-                        .background(.white.opacity(0.14))
-                        .clipShape(Circle())
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
-                .foregroundStyle(.white)
-
-                Button {
-                    viewModel.captureSitePhoto()
-                } label: {
+                .foregroundStyle(.primary)
+                .overlay(alignment: .top) {
                     ZStack {
                         Circle()
-                            .fill(photoButtonFill)
-                            .frame(width: 52, height: 52)
+                            .fill(viewModel.isOnWiFi ? Color.green : Color.red)
+                            .frame(width: 18, height: 18)
+                        Image(systemName: "wifi")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundStyle(.white)
+                    }
+                    .offset(y: -12)
+                }
 
+                Button {
+                    showingCameraPopup = true
+                } label: {
+                    ZStack {
                         if viewModel.isCapturingPhoto {
                             ProgressView()
-                                .tint(.white)
                         } else {
                             Image(systemName: viewModel.hasStagedPhoto ? "checkmark.circle.fill" : "camera.fill")
                                 .font(.title3)
                         }
                     }
+                    .frame(width: 52, height: 52)
+                    .glassEffect(.regular.interactive(), in: .circle)
                 }
-                .foregroundStyle(.white)
-                .disabled(!viewModel.canCapturePhotoNow)
+                .foregroundStyle(viewModel.hasStagedPhoto ? .green : .primary)
+                .disabled(viewModel.isListening || viewModel.isLoading || viewModel.isCapturingPhoto || viewModel.hasStagedPhoto)
 
                 Button {
                     viewModel.toggleListening()
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(viewModel.canUseMicrophone ? (viewModel.isListening ? Color.red : Color.white) : Color.white.opacity(0.45))
-                            .frame(width: 96, height: 96)
+                            .fill(viewModel.canUseMicrophone ? (viewModel.isListening ? Color.red : Color.accentColor) : Color.secondary.opacity(0.35))
+                            .frame(width: 72, height: 72)
 
                         Image(systemName: viewModel.isListening ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 32, weight: .semibold))
-                            .foregroundStyle(viewModel.isListening ? .white : .black.opacity(viewModel.canUseMicrophone ? 1 : 0.55))
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundStyle(.white)
                     }
                 }
                 .disabled(!viewModel.canUseMicrophone)
@@ -261,246 +177,128 @@ struct ChatView: View {
                     Image(systemName: "speaker.wave.2.fill")
                         .font(.title3)
                         .frame(width: 52, height: 52)
-                        .background(.white.opacity(0.14))
-                        .clipShape(Circle())
+                        .glassEffect(.regular.interactive(), in: .circle)
                 }
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .disabled(!viewModel.hasReply)
             }
-
-            Text(viewModel.isListening
-                 ? "Talk naturally. The app auto-sends after you pause, or tap again to send now."
-                 : "Recommended flow: 1) tap the camera button to stage a photo, 2) tap the mic to either report a new issue or ask a question about it, 3) let Wi-Fi auto-sync or press Sync Now for report uploads.")
-                .font(.footnote)
-                .foregroundStyle(.white.opacity(0.82))
         }
-        .padding(18)
-        .background(.ultraThinMaterial.opacity(0.75))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    private var cameraStatusOverlayText: String {
-        return viewModel.isCameraContextEnabled
-            ? cameraController.statusText
-            : "Site photo capture is off. Voice still works locally without it."
-    }
-
-    private var cameraContextDescription: String {
-        if !viewModel.isCameraContextEnabled {
-            return "Off. Enable this when you want to snap one photo, then either describe a new issue or ask a question about it."
+    private var cloudSyncDetail: String {
+        if viewModel.backendSyncText.localizedCaseInsensitiveContains("syncing") {
+            return "Syncing…"
         }
-
-        return "\(viewModel.stagedPhotoStatusText) The next completed voice turn will consume the staged photo and decide whether this is a new report or a local question."
-    }
-
-    private var backendSyncDescription: String {
         if viewModel.pendingSyncCount > 0 {
-            return "\(viewModel.backendSyncText)\nPending queue: \(viewModel.pendingSyncCount)"
+            return "\(viewModel.pendingSyncCount) queued"
         }
-
-        return viewModel.backendSyncText
+        if let lastSyncedAt = viewModel.lastSyncedAt {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .short
+            return "Synced \(formatter.localizedString(for: lastSyncedAt, relativeTo: Date()))"
+        }
+        return "Idle"
     }
 
-    private var cameraPillLabel: String {
-        if !viewModel.isCameraContextEnabled {
-            return "Photo Off"
-        }
+    private func statusCard(title: String, detail: String, showCheck: Bool) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title.uppercased())
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
 
-        if viewModel.hasStagedPhoto {
-            return "Photo Staged"
-        }
+                Text(detail)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+            }
 
-        if viewModel.isCapturingPhoto {
-            return "Capturing"
-        }
+            Spacer(minLength: 8)
 
-        return cameraController.isReady ? "Photo Ready" : "Photo Optional"
+            if showCheck {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.green)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
     }
 
-    private var cameraPillSystemImage: String {
-        if !viewModel.isCameraContextEnabled {
-            return "camera.fill"
-        }
+    private var cameraPopup: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { showingCameraPopup = false }
 
-        if viewModel.hasStagedPhoto {
-            return "checkmark.circle.fill"
-        }
-
-        if viewModel.isCapturingPhoto {
-            return "camera.aperture"
-        }
-
-        return cameraController.isReady ? "video.fill" : "video.badge.waveform"
-    }
-
-    private var cameraPillTint: Color {
-        if !viewModel.isCameraContextEnabled {
-            return .gray
-        }
-
-        if viewModel.hasStagedPhoto {
-            return .green
-        }
-
-        if viewModel.isCapturingPhoto {
-            return .yellow
-        }
-
-        return cameraController.isReady ? .green : .orange
-    }
-
-    private var photoButtonFill: Color {
-        if !viewModel.canCapturePhotoNow {
-            return .white.opacity(0.08)
-        }
-
-        if viewModel.hasStagedPhoto {
-            return Color.green.opacity(0.28)
-        }
-
-        return .white.opacity(0.14)
-    }
-
-    private var modelPillLabel: String {
-        if viewModel.isImportingModel {
-            return "Importing Model"
-        }
-
-        if viewModel.isPreparingModel {
-            return "Prewarming"
-        }
-
-        if viewModel.isListening {
-            return "Listening"
-        }
-
-        if viewModel.isLoading {
-            return "Thinking"
-        }
-
-        return viewModel.isModelReady ? "Model Ready" : "Model Needed"
-    }
-
-    private var modelPillSystemImage: String {
-        if viewModel.isImportingModel {
-            return "square.and.arrow.down.fill"
-        }
-
-        if viewModel.isPreparingModel {
-            return "bolt.badge.clock.fill"
-        }
-
-        if viewModel.isListening {
-            return "waveform"
-        }
-
-        return viewModel.isModelReady ? "bolt.circle.fill" : "externaldrive.fill.badge.exclamationmark"
-    }
-
-    private var modelPillTint: Color {
-        if viewModel.isImportingModel {
-            return .orange
-        }
-
-        if viewModel.isPreparingModel {
-            return .yellow
-        }
-
-        if viewModel.isListening {
-            return .red
-        }
-
-        return viewModel.isModelReady ? .blue : .yellow
-    }
-
-    private var syncPillLabel: String {
-        if viewModel.pendingSyncCount > 0 {
-            return "Queued \(viewModel.pendingSyncCount)"
-        }
-
-        if let backendErrorMessage = viewModel.backendErrorMessage, !backendErrorMessage.isEmpty {
-            return "Sync Error"
-        }
-
-        return "Sync Ready"
-    }
-
-    private var syncPillSystemImage: String {
-        if viewModel.pendingSyncCount > 0 {
-            return "tray.full.fill"
-        }
-
-        if let backendErrorMessage = viewModel.backendErrorMessage, !backendErrorMessage.isEmpty {
-            return "exclamationmark.triangle.fill"
-        }
-
-        return "icloud.and.arrow.up.fill"
-    }
-
-    private var syncPillTint: Color {
-        if viewModel.pendingSyncCount > 0 {
-            return .orange
-        }
-
-        if let backendErrorMessage = viewModel.backendErrorMessage, !backendErrorMessage.isEmpty {
-            return .red
-        }
-
-        return .green
-    }
-
-    private func modelSetupCard(text: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            infoCard(title: "Setup", text: text)
-
-            HStack(spacing: 10) {
-                Button("Import Model Folder") {
-                    isImportingModel = true
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.white.opacity(0.22))
-
-                Button("Refresh") {
-                    Task {
-                        await viewModel.refreshModelAvailability()
+            VStack(spacing: 0) {
+                ZStack {
+                    if cameraController.isReady {
+                        CameraPreview(session: cameraController.session)
+                    } else {
+                        Color.black.overlay {
+                            VStack(spacing: 10) {
+                                ProgressView()
+                                Text(cameraController.statusText)
+                                    .font(.footnote)
+                                    .foregroundStyle(.white.opacity(0.8))
+                                    .multilineTextAlignment(.center)
+                                    .padding(.horizontal, 16)
+                            }
+                        }
                     }
                 }
-                .buttonStyle(.bordered)
+                .frame(width: 280, height: 360)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay(alignment: .topTrailing) {
+                    Button {
+                        showingCameraPopup = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 30, height: 30)
+                            .background(.black.opacity(0.55), in: .circle)
+                    }
+                    .padding(10)
+                }
+
+                Button {
+                    viewModel.captureSitePhoto()
+                } label: {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white, lineWidth: 4)
+                            .frame(width: 68, height: 68)
+                        Circle()
+                            .fill(Color.white)
+                            .frame(width: 56, height: 56)
+                        if viewModel.isCapturingPhoto {
+                            ProgressView()
+                                .tint(.black)
+                        }
+                    }
+                }
+                .disabled(!cameraController.isReady || viewModel.isCapturingPhoto)
+                .padding(.top, 20)
             }
-            .tint(.white)
         }
     }
 
-    private func infoCard(title: String, text: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased())
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.white.opacity(0.7))
-
+    private func toastBanner(text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.green)
             Text(text)
-                .font(.body)
-                .foregroundStyle(.white)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(Color.black.opacity(0.28))
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-}
-
-private struct StatusPill: View {
-    let label: String
-    let systemImage: String
-    let tint: Color
-
-    var body: some View {
-        Label(label, systemImage: systemImage)
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(tint.opacity(0.18))
-            .foregroundStyle(.white)
-            .clipShape(Capsule())
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .capsule)
     }
 }
 
@@ -730,25 +528,25 @@ private final class CameraSessionController: NSObject, ObservableObject, @unchec
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleRuntimeError(_:)),
-            name: .AVCaptureSessionRuntimeError,
+            name: AVCaptureSession.runtimeErrorNotification,
             object: session
         )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleSessionInterrupted(_:)),
-            name: .AVCaptureSessionWasInterrupted,
+            name: AVCaptureSession.wasInterruptedNotification,
             object: session
         )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleSessionInterruptionEnded(_:)),
-            name: .AVCaptureSessionInterruptionEnded,
+            name: AVCaptureSession.interruptionEndedNotification,
             object: session
         )
     }
 
     private func publishStatus(_ text: String, ready: Bool) {
-        DispatchQueue.main.async {
+        Task { @MainActor in
             self.statusText = text
             self.isReady = ready
         }
@@ -787,7 +585,7 @@ private final class CameraSessionController: NSObject, ObservableObject, @unchec
         }
     }
 
-    private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
+    nonisolated private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelegate {
         let uniqueID: Int64
         private let completion: (Result<Data, Error>) -> Void
 

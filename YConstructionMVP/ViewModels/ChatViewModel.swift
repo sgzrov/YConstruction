@@ -3,6 +3,10 @@ import Combine
 import Foundation
 import Speech
 
+private func ycLog(_ message: String) {
+    print("[YC][Chat] \(message)")
+}
+
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published var messages: [Message] = []
@@ -19,13 +23,16 @@ final class ChatViewModel: ObservableObject {
     @Published var isModelReady = false
     @Published var isImportingModel = false
     @Published var isPreparingModel = false
-    @Published var isCameraContextEnabled = false
+    @Published var isCameraContextEnabled = true
     @Published var isCapturingPhoto = false
     @Published var stagedPhotoStatusText = "No site photo staged."
     @Published var backendStatusText = "Checking Supabase contract..."
     @Published var backendSyncText = "No queued captures yet."
     @Published var backendErrorMessage: String?
     @Published var pendingSyncCount = 0
+    @Published var lastSyncedAt: Date?
+    @Published var isOnWiFi: Bool = false
+    @Published var toastMessage: String?
 
     private enum CaptureTurnState {
         case idle
@@ -99,21 +106,30 @@ final class ChatViewModel: ObservableObject {
     private var stagedPhotoURL: URL?
     private var stagedPhotoSession: StagedPhotoSession?
     private var cancellables: Set<AnyCancellable> = []
+    private var toastDismissTask: Task<Void, Never>?
 
     init(
         aiService: any AIService,
-        defectSyncService: DefectSyncService
+        defectSyncService: DefectSyncService,
+        vocabulary: IFCVocabulary = .empty
     ) {
         self.aiService = aiService
         self.defectSyncService = defectSyncService
         let localRAGService = LocalRAGService()
         self.localRAGService = localRAGService
-        self.photoTurnCoordinator = PhotoTurnCoordinator(aiService: aiService, ragService: localRAGService)
+        self.photoTurnCoordinator = PhotoTurnCoordinator(
+            aiService: aiService,
+            ragService: localRAGService,
+            vocabulary: vocabulary
+        )
         bindSyncState()
     }
 
+    @MainActor
     convenience init(aiService: any AIService = MockAIService()) {
-        self.init(aiService: aiService, defectSyncService: DefectSyncService())
+        let store = DefectStore()
+        let sync = SyncService(store: store)
+        self.init(aiService: aiService, defectSyncService: DefectSyncService(store: store, syncService: sync))
     }
 
     var hasReply: Bool {
@@ -246,22 +262,51 @@ final class ChatViewModel: ObservableObject {
         speak(latestReply)
     }
 
-    func clearConversation() {
-        cancelListening()
-        messages.removeAll()
-        lastInputSummary = ""
+    func undoLastAction() {
+        if isListening {
+            cancelListening()
+            statusText = "Listening canceled."
+            return
+        }
+
+        if stagedPhotoURL != nil || stagedPhotoSession != nil {
+            clearStagedPhotoSession(deleteLocalPhoto: true)
+            statusText = "Staged photo removed."
+            return
+        }
+
+        guard !messages.isEmpty else {
+            statusText = "Nothing to undo."
+            return
+        }
+
+        if messages.last?.sender == .assistant {
+            messages.removeLast()
+        }
+        if messages.last?.sender == .user {
+            messages.removeLast()
+        }
+
         latestReply = ""
         lastRuntimeText = nil
-        cleanupFile(at: stagedPhotoURL)
-        stagedPhotoURL = nil
-        stagedPhotoSession = nil
-        stagedPhotoStatusText = "No site photo staged."
-        statusText = isModelReady ? "Ready on iPhone." : "Import \(modelDisplayName) before asking a question."
-        permissionMessage = nil
+        lastInputSummary = ""
+        statusText = "Last turn removed."
     }
 
     func stopListening() {
         cancelListening()
+    }
+
+    func showToast(_ message: String, duration: TimeInterval = 2.5) {
+        toastDismissTask?.cancel()
+        toastMessage = message
+        toastDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(duration * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            if self.toastMessage == message {
+                self.toastMessage = nil
+            }
+        }
     }
 
     private func stageCurrentCameraPhoto() async {
@@ -293,6 +338,7 @@ final class ChatViewModel: ObservableObject {
             stagedPhotoSession = .awaitingIntent(createdAt: Date(), transcriptSnippets: [])
             stagedPhotoStatusText = "Photo staged locally. Ask a question about it, or describe a new issue."
             statusText = "Site photo staged."
+            showToast("Picture taken")
         } catch {
             stagedPhotoStatusText = "Photo capture succeeded, but it could not be stored locally for sync."
             statusText = "Site photo storage failed."
@@ -371,7 +417,7 @@ final class ChatViewModel: ObservableObject {
     private func startSilenceMonitor() {
         silenceTimer?.invalidate()
         silenceTimer = Timer.scheduledTimer(withTimeInterval: monitorInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.monitorCaptureState()
             }
         }
@@ -554,13 +600,22 @@ final class ChatViewModel: ObservableObject {
     ) async throws {
         let currentSession = stagedPhotoSession ?? .awaitingIntent(createdAt: capturedAt, transcriptSnippets: [])
 
+        let stagedPhotoPath = stagedPhotoURL?.path
+        let cachedRecords = await defectSyncService.cachedProjectChangesForRetrieval()
+        ycLog("[handleStagedPhotoTurn] photo=\(stagedPhotoPath ?? "nil") sessionKind=\(String(describing: currentSession)) cachedRecords=\(cachedRecords.count) transcript=\"\(transcript.text)\"")
+
         switch currentSession {
         case .awaitingIntent(let createdAt, let transcriptSnippets):
             let history = transcriptSnippets + [transcript.text]
-            let decision = await photoTurnCoordinator.classifyIntent(transcriptHistory: history)
+            let decision = await photoTurnCoordinator.classifyIntent(
+                transcriptHistory: history,
+                cachedRecords: cachedRecords,
+                stagedPhotoPath: stagedPhotoPath
+            )
 
             switch decision.intent {
             case .report:
+                ycLog("[handleStagedPhotoTurn] intent=report — RAG NOT used (report path)")
                 isLoading = true
                 statusText = "Reviewing the new report..."
                 stagedPhotoStatusText = "Photo staged for a new report."
@@ -575,12 +630,14 @@ final class ChatViewModel: ObservableObject {
                 let outcome = try await photoTurnCoordinator.processReportTurn(
                     existingState: existingState,
                     newTranscript: transcript.text,
-                    createdAt: createdAt
+                    createdAt: createdAt,
+                    stagedPhotoPath: stagedPhotoPath
                 )
                 lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
                 await applyReportTurnOutcome(outcome)
 
             case .query:
+                ycLog("[handleStagedPhotoTurn] intent=query — RAG path will be invoked once question is ready")
                 isLoading = true
                 statusText = "Preparing the local question search..."
                 stagedPhotoStatusText = "Photo staged for a local question."
@@ -598,14 +655,15 @@ final class ChatViewModel: ObservableObject {
                 let outcome = try await photoTurnCoordinator.processQueryTurn(
                     existingState: existingState,
                     newTranscript: transcript.text,
-                    createdAt: createdAt
+                    createdAt: createdAt,
+                    stagedPhotoPath: stagedPhotoPath
                 )
                 lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
                 await applyQueryTurnOutcome(outcome)
 
             case .unclear:
                 stagedPhotoSession = .awaitingIntent(createdAt: createdAt, transcriptSnippets: history)
-                let assistantText = decision.assistantMessage
+                let assistantText = "Is this a new report, or a question about an existing issue?"
                 appendMessage(Message(text: assistantText, sender: .assistant))
                 latestReply = assistantText
                 stagedPhotoStatusText = "Photo staged locally. I still need to know whether this is a new report or a question."
@@ -617,15 +675,18 @@ final class ChatViewModel: ObservableObject {
         case .report(let state):
             if let pivotIntent = await photoTurnCoordinator.pivotIntent(
                 for: transcript.text,
-                currentIntent: .report
+                currentIntent: .report,
+                cachedRecords: cachedRecords
             ), pivotIntent == .query {
+                ycLog("[handleStagedPhotoTurn] pivoted report→query — RAG path will be invoked")
                 isLoading = true
                 statusText = "Switching to a local question search..."
                 stagedPhotoStatusText = "Photo staged for a local question."
                 let outcome = try await photoTurnCoordinator.processQueryTurn(
                     existingState: makeQueryPivotState(from: state),
                     newTranscript: transcript.text,
-                    createdAt: state.createdAt
+                    createdAt: state.createdAt,
+                    stagedPhotoPath: stagedPhotoPath
                 )
                 lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
                 await applyQueryTurnOutcome(outcome)
@@ -637,7 +698,8 @@ final class ChatViewModel: ObservableObject {
             let outcome = try await photoTurnCoordinator.processReportTurn(
                 existingState: state,
                 newTranscript: transcript.text,
-                createdAt: state.createdAt
+                createdAt: state.createdAt,
+                stagedPhotoPath: stagedPhotoPath
             )
             lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
             await applyReportTurnOutcome(outcome)
@@ -645,15 +707,18 @@ final class ChatViewModel: ObservableObject {
         case .query(let state):
             if let pivotIntent = await photoTurnCoordinator.pivotIntent(
                 for: transcript.text,
-                currentIntent: .query
+                currentIntent: .query,
+                cachedRecords: cachedRecords
             ), pivotIntent == .report {
+                ycLog("[handleStagedPhotoTurn] pivoted query→report — RAG NOT used")
                 isLoading = true
                 statusText = "Switching to a new report..."
                 stagedPhotoStatusText = "Photo staged for a new report."
                 let outcome = try await photoTurnCoordinator.processReportTurn(
                     existingState: makeReportPivotState(from: state),
                     newTranscript: transcript.text,
-                    createdAt: state.createdAt
+                    createdAt: state.createdAt,
+                    stagedPhotoPath: stagedPhotoPath
                 )
                 lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
                 await applyReportTurnOutcome(outcome)
@@ -665,7 +730,8 @@ final class ChatViewModel: ObservableObject {
             let outcome = try await photoTurnCoordinator.processQueryTurn(
                 existingState: state,
                 newTranscript: transcript.text,
-                createdAt: state.createdAt
+                createdAt: state.createdAt,
+                stagedPhotoPath: stagedPhotoPath
             )
             lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
             await applyQueryTurnOutcome(outcome)
@@ -701,11 +767,13 @@ final class ChatViewModel: ObservableObject {
 
                 let assistantText: String
                 if syncResult.wasUploaded && syncResult.photoUploaded {
-                    assistantText = "Photo uploaded and done!"
-                    statusText = "Photo uploaded and done!"
+                    assistantText = "Uploaded to Supabase."
+                    statusText = "Uploaded to Supabase."
+                    showToast("Uploaded to Supabase")
                 } else {
                     assistantText = "Issue saved locally with its photo. It will upload automatically on Wi-Fi or when you tap Sync Now."
                     statusText = "Issue queued locally for Supabase."
+                    showToast("Queued locally — will upload on Wi-Fi")
                 }
 
                 appendMessage(Message(text: assistantText, sender: .assistant))
@@ -747,16 +815,27 @@ final class ChatViewModel: ObservableObject {
             statusText = "Searching synced reports on this iPhone..."
             do {
                 let cachedRecords = await defectSyncService.cachedProjectChangesForRetrieval()
+                let speaker = StreamingSentenceSpeaker(synthesizer: synthesizer)
                 let answerOutcome = try await photoTurnCoordinator.answerQuery(
                     state: outcome.state,
-                    cachedRecords: cachedRecords
+                    cachedRecords: cachedRecords,
+                    stagedPhotoPath: stagedPhotoURL?.path,
+                    onToken: { token in
+                        Task { @MainActor in
+                            speaker.ingest(token)
+                        }
+                    }
                 )
+                speaker.flush()
                 appendMessage(Message(text: answerOutcome.assistantMessage, sender: .assistant))
                 latestReply = answerOutcome.assistantMessage
                 lastRuntimeText = formatRuntimeStats(answerOutcome.runtimeStats)
                 statusText = "Local answer ready."
                 lastInputSummary = answerOutcome.summaryText
-                speak(answerOutcome.assistantMessage)
+                // Only speak the full text if streaming never fired (e.g., MockAIService fallback).
+                if !speaker.didSpeakAnything {
+                    speak(answerOutcome.assistantMessage)
+                }
                 clearStagedPhotoSession(deleteLocalPhoto: true)
                 await refreshLocalSearchStatus()
             } catch {
@@ -826,7 +905,14 @@ final class ChatViewModel: ObservableObject {
     }
 
     private func speak(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        ycLog("[speak] len=\(trimmed.count) preview=\"\(trimmed.prefix(160))\"")
+        guard !trimmed.isEmpty else {
+            ycLog("[speak] ERROR refusing to speak empty text")
+            return
+        }
+
+        let utterance = AVSpeechUtterance(string: trimmed)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         utterance.rate = 0.5
         utterance.prefersAssistiveTechnologySettings = true
@@ -1019,6 +1105,16 @@ final class ChatViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.pendingSyncCount = $0 }
             .store(in: &cancellables)
+
+        defectSyncService.$lastSyncedAt
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.lastSyncedAt = $0 }
+            .store(in: &cancellables)
+
+        defectSyncService.$isOnWiFi
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.isOnWiFi = $0 }
+            .store(in: &cancellables)
     }
 }
 
@@ -1041,6 +1137,64 @@ private enum RecorderError: LocalizedError {
         case .startFailed:
             return "The iPhone could not start recording local audio."
         }
+    }
+}
+
+@MainActor
+private final class StreamingSentenceSpeaker {
+    private let synthesizer: AVSpeechSynthesizer
+    private var buffer = ""
+    private(set) var didSpeakAnything = false
+
+    init(synthesizer: AVSpeechSynthesizer) {
+        self.synthesizer = synthesizer
+        synthesizer.stopSpeaking(at: .immediate)
+    }
+
+    /// Append a new token; speak any newly-complete sentences in the buffer.
+    func ingest(_ token: String) {
+        buffer += token
+        while let boundary = Self.firstSentenceBoundary(in: buffer) {
+            let sentence = String(buffer[..<boundary])
+            buffer.removeSubrange(..<boundary)
+            speak(sentence)
+        }
+    }
+
+    /// Speak any remainder that didn't end with punctuation.
+    func flush() {
+        let remainder = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        buffer = ""
+        guard !remainder.isEmpty else { return }
+        speak(remainder)
+    }
+
+    private func speak(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let utterance = AVSpeechUtterance(string: trimmed)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = 0.5
+        synthesizer.speak(utterance)
+        didSpeakAnything = true
+    }
+
+    /// Returns the index after the next `. `, `! ` or `? ` in the buffer,
+    /// or nil if the buffer hasn't reached a sentence boundary yet.
+    private static func firstSentenceBoundary(in text: String) -> String.Index? {
+        for endMark in [".", "!", "?"] {
+            if let markRange = text.range(of: endMark) {
+                let after = markRange.upperBound
+                if after < text.endIndex, text[after].isWhitespace {
+                    return text.index(after: after)
+                }
+                if after == text.endIndex {
+                    // Sentence ends at the end of buffer, still waiting for more tokens.
+                    continue
+                }
+            }
+        }
+        return nil
     }
 }
 
@@ -1078,6 +1232,52 @@ private enum SpeechRecognitionError: LocalizedError {
 }
 
 private enum AppleSpeechTranscriber {
+    nonisolated private final class RecognitionSession: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: SFSpeechRecognitionTask?
+        private var continuation: CheckedContinuation<SpeechTranscriptionResult, Error>?
+
+        func attach(continuation: CheckedContinuation<SpeechTranscriptionResult, Error>) {
+            lock.lock()
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func setTask(_ task: SFSpeechRecognitionTask) {
+            lock.lock()
+            let shouldCancelImmediately = continuation == nil
+            if !shouldCancelImmediately {
+                self.task = task
+            }
+            lock.unlock()
+
+            if shouldCancelImmediately {
+                task.cancel()
+            }
+        }
+
+        func finish(_ result: Result<SpeechTranscriptionResult, Error>, cancelTask: Bool = false) {
+            let continuationToResume: CheckedContinuation<SpeechTranscriptionResult, Error>?
+            let taskToCancel: SFSpeechRecognitionTask?
+
+            lock.lock()
+            continuationToResume = continuation
+            continuation = nil
+            taskToCancel = cancelTask ? task : nil
+            task = nil
+            lock.unlock()
+
+            if cancelTask {
+                taskToCancel?.cancel()
+            }
+            continuationToResume?.resume(with: result)
+        }
+
+        func cancel() {
+            finish(.failure(CancellationError()), cancelTask: true)
+        }
+    }
+
     static func requestAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
         let currentStatus = SFSpeechRecognizer.authorizationStatus()
         guard currentStatus == .notDetermined else {
@@ -1107,42 +1307,43 @@ private enum AppleSpeechTranscriber {
         let useOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
         request.requiresOnDeviceRecognition = useOnDeviceRecognition
 
-        return try await withCheckedThrowingContinuation { continuation in
-            var didResume = false
-            var recognitionTask: SFSpeechRecognitionTask?
+        let session = RecognitionSession()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                session.attach(continuation: continuation)
 
-            recognitionTask = recognizer.recognitionTask(with: request) { result, error in
-                guard !didResume else { return }
+                let recognitionTask = recognizer.recognitionTask(with: request) { result, error in
+                    if let error {
+                        session.finish(.failure(error), cancelTask: true)
+                        return
+                    }
 
-                if let error {
-                    didResume = true
-                    recognitionTask?.cancel()
-                    continuation.resume(throwing: error)
-                    return
-                }
+                    guard let result, result.isFinal else {
+                        return
+                    }
 
-                guard let result, result.isFinal else {
-                    return
-                }
+                    let transcript = result.bestTranscription.formattedString
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
 
-                let transcript = result.bestTranscription.formattedString
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !transcript.isEmpty else {
+                        session.finish(.failure(SpeechRecognitionError.noSpeechRecognized), cancelTask: true)
+                        return
+                    }
 
-                guard !transcript.isEmpty else {
-                    didResume = true
-                    recognitionTask?.cancel()
-                    continuation.resume(throwing: SpeechRecognitionError.noSpeechRecognized)
-                    return
-                }
-
-                didResume = true
-                continuation.resume(
-                    returning: SpeechTranscriptionResult(
-                        text: transcript,
-                        usedOnDeviceRecognition: useOnDeviceRecognition
+                    session.finish(
+                        .success(
+                            SpeechTranscriptionResult(
+                                text: transcript,
+                                usedOnDeviceRecognition: useOnDeviceRecognition
+                            )
+                        )
                     )
-                )
+                }
+
+                session.setTask(recognitionTask)
             }
+        } onCancel: {
+            session.cancel()
         }
     }
 }

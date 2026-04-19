@@ -18,8 +18,6 @@ final class SceneRendererService {
 
     private var markersByDefectId: [String: SCNNode] = [:]
     private var modelBounds: (min: SCNVector3, max: SCNVector3) = (SCNVector3(-5, -5, 0), SCNVector3(5, 5, 5))
-    private var storeys: [ElementIndex.Storey] = []
-    private(set) var currentStorey: String?
     private(set) var currentMode: SceneCameraMode = .perspective3D
 
     init() {
@@ -58,29 +56,39 @@ final class SceneRendererService {
         let asset: GLTFAsset = try await withCheckedThrowingContinuation { cont in
             // GLTFKit2's handler fires repeatedly (parsing → validating → processing
             // → complete/error). Resume exactly once, on complete OR error.
+            let resumeLock = NSLock()
             var resumed = false
+            func resumeOnce(_ operation: () -> Void) {
+                resumeLock.lock()
+                defer { resumeLock.unlock() }
+                guard !resumed else { return }
+                resumed = true
+                operation()
+            }
             GLTFAsset.load(with: glbURL, options: [:]) { _, status, maybeAsset, maybeError, _ in
-                if resumed { return }
                 switch status {
                 case .complete:
                     if let asset = maybeAsset {
-                        resumed = true
-                        cont.resume(returning: asset)
+                        resumeOnce {
+                            cont.resume(returning: asset)
+                        }
                     } else {
-                        resumed = true
-                        cont.resume(throwing: maybeError ?? NSError(
-                            domain: "SceneRenderer",
-                            code: 0,
-                            userInfo: [NSLocalizedDescriptionKey: "glTF load completed with no asset"]
-                        ))
+                        resumeOnce {
+                            cont.resume(throwing: maybeError ?? NSError(
+                                domain: "SceneRenderer",
+                                code: 0,
+                                userInfo: [NSLocalizedDescriptionKey: "glTF load completed with no asset"]
+                            ))
+                        }
                     }
                 case .error:
-                    resumed = true
-                    cont.resume(throwing: maybeError ?? NSError(
-                        domain: "SceneRenderer",
-                        code: -1,
-                        userInfo: [NSLocalizedDescriptionKey: "glTF load failed"]
-                    ))
+                    resumeOnce {
+                        cont.resume(throwing: maybeError ?? NSError(
+                            domain: "SceneRenderer",
+                            code: -1,
+                            userInfo: [NSLocalizedDescriptionKey: "glTF load failed"]
+                        ))
+                    }
                 default:
                     break
                 }
@@ -128,14 +136,6 @@ final class SceneRendererService {
                 node.isHidden = true
             }
         }
-    }
-
-    func configure(storeys: [ElementIndex.Storey]) {
-        self.storeys = storeys
-        if currentStorey == nil {
-            currentStorey = storeys.first(where: { $0.name == "Level 1" })?.name ?? storeys.first?.name
-        }
-        refreshStoreyVisibility()
     }
 
     // MARK: - Camera
@@ -222,22 +222,8 @@ final class SceneRendererService {
         }
     }
 
-    // MARK: - Storey filter
-
-    func setStorey(_ storey: String?) {
-        currentStorey = storey
-        refreshStoreyVisibility()
-    }
-
     func setMode(_ mode: SceneCameraMode) {
         currentMode = mode
-    }
-
-    private func refreshStoreyVisibility() {
-        for child in markersNode.childNodes {
-            let markerStorey = child.value(forKey: "storey") as? String
-            child.isHidden = (currentStorey != nil && markerStorey != nil && markerStorey != currentStorey)
-        }
     }
 
     // MARK: - Markers
@@ -260,15 +246,12 @@ final class SceneRendererService {
                 markersByDefectId[defect.id] = node
             }
         }
-
-        refreshStoreyVisibility()
     }
 
     private func makeMarkerNode(for defect: Defect) -> SCNNode {
         let container = SCNNode()
         container.name = "marker:\(defect.id)"
         container.setValue(defect.id, forKey: "defectId")
-        container.setValue(defect.storey, forKey: "storey")
 
         let colorIndex = WorkerDirectoryService.shared.colorIndex(forReporter: defect.reporter)
         let color = WorkerColorPalette.uiColor(for: colorIndex)

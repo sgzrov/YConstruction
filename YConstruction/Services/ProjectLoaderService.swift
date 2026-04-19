@@ -1,7 +1,7 @@
 import Foundation
 import Supabase
 
-struct ProjectBundle: Sendable {
+nonisolated struct ProjectBundle: Sendable {
     let glbURL: URL
     let elementIndexURL: URL
     let source: Source
@@ -13,7 +13,7 @@ struct ProjectBundle: Sendable {
     }
 }
 
-enum ProjectLoaderError: Error, LocalizedError {
+nonisolated enum ProjectLoaderError: Error, LocalizedError {
     case noSource(String)
 
     var errorDescription: String? {
@@ -23,7 +23,7 @@ enum ProjectLoaderError: Error, LocalizedError {
     }
 }
 
-struct ProjectLoaderService: Sendable {
+nonisolated struct ProjectLoaderService: Sendable {
     let projectId: String
     let supabase: SupabaseClientService
 

@@ -27,3 +27,15 @@ cactus/venv/
 cactus/.venv/
 cactus/.git/
 cactus/.gitmodules
+
+# Skill-install scaffolding (regenerated via `npx skills add`)
+.agents/
+skills/
+skills-lock.json
+.junie/
+.claude/skills/supabase
+.claude/skills/supabase-postgres-best-practices
+
+# Stale pre-merge copy of the cactus xcframework (canonical path is
+# cactus/apple/cactus-ios.xcframework)
+cactus-ios.xcframework

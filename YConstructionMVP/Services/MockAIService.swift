@@ -1,6 +1,6 @@
 import Foundation
 
-struct MockAIService: AIService {
+nonisolated struct MockAIService: AIService {
     func prewarm() async throws -> AIModelPrewarmResult {
         AIModelPrewarmResult(modelPath: "/mock/gemma-3n-e2b-it")
     }

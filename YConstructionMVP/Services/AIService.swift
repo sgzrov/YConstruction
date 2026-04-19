@@ -1,6 +1,6 @@
 import Foundation
 
-struct AIRuntimeStats: Equatable, Sendable {
+nonisolated struct AIRuntimeStats: Equatable, Sendable {
     let ramUsageMB: Double?
     let timeToFirstTokenMS: Double?
     let totalTimeMS: Double?
@@ -8,16 +8,16 @@ struct AIRuntimeStats: Equatable, Sendable {
     let cloudHandoff: Bool
 }
 
-struct AIResponse: Equatable, Sendable {
+nonisolated struct AIResponse: Equatable, Sendable {
     let text: String
     let runtimeStats: AIRuntimeStats?
 }
 
-struct AIModelPrewarmResult: Equatable, Sendable {
+nonisolated struct AIModelPrewarmResult: Equatable, Sendable {
     let modelPath: String
 }
 
-struct AIRequest: Sendable {
+nonisolated struct AIRequest: Sendable {
     let prompt: String
     let imagePaths: [String]
     let audioPaths: [String]
@@ -39,11 +39,34 @@ struct AIRequest: Sendable {
     }
 }
 
-protocol AIService: Sendable {
+nonisolated protocol AIService: Sendable {
     func prewarm() async throws -> AIModelPrewarmResult
 
     /// Sends a multimodal turn plus any current conversation context.
     func send(request: AIRequest, conversation: [Message]) async throws -> AIResponse
 
+    /// Streaming variant. `onToken` is invoked from the model's generation
+    /// thread as tokens are decoded. The final `AIResponse` still contains the
+    /// full buffered text.
+    func sendStreaming(
+        request: AIRequest,
+        conversation: [Message],
+        onToken: @Sendable @escaping (String) -> Void
+    ) async throws -> AIResponse
+
     func latestRuntimeStats() async -> AIRuntimeStats?
+}
+
+extension AIService {
+    /// Default no-streaming fallback: delivers the entire response at the end
+    /// as a single token. Real streaming implementations should override.
+    func sendStreaming(
+        request: AIRequest,
+        conversation: [Message],
+        onToken: @Sendable @escaping (String) -> Void
+    ) async throws -> AIResponse {
+        let response = try await send(request: request, conversation: conversation)
+        onToken(response.text)
+        return response
+    }
 }

@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 import GRDB
 
-struct Worker: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
+nonisolated struct Worker: Codable, Equatable, Identifiable, FetchableRecord, MutablePersistableRecord, Sendable {
     var id: String
     var name: String
     var department: String
@@ -29,7 +29,7 @@ struct Worker: Codable, Equatable, Identifiable, FetchableRecord, MutablePersist
     }
 }
 
-enum WorkerColorPalette {
+nonisolated enum WorkerColorPalette {
     static let hex: [UInt32] = [
         0x4E79A7, // 0 blue
         0xF28E2B, // 1 orange

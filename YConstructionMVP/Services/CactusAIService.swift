@@ -1,12 +1,32 @@
 import Foundation
 
+nonisolated private func ycLog(_ message: String) {
+    print("[YC][Cactus] \(message)")
+}
+
+/// Thread-safe one-shot latch that logs the time-to-first-token exactly once.
+nonisolated final class FirstTokenLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+
+    func markIfFirst(elapsedSince started: Date) {
+        lock.lock()
+        let shouldFire = !fired
+        fired = true
+        lock.unlock()
+        guard shouldFire else { return }
+        let elapsed = Date().timeIntervalSince(started)
+        ycLog("[sendStreaming] first token at \(String(format: "%.2f", elapsed))s")
+    }
+}
+
 actor CactusAIService: AIService {
-    struct ModelSearchPath {
+    nonisolated struct ModelSearchPath {
         let subdirectory: String?
         let folderName: String
     }
 
-    struct ChatPayloadMessage: Encodable, Equatable {
+    nonisolated struct ChatPayloadMessage: Encodable, Equatable {
         let role: String
         let content: String
         let images: [String]?
@@ -20,7 +40,7 @@ actor CactusAIService: AIService {
         }
     }
 
-    enum SetupError: LocalizedError {
+    nonisolated enum SetupError: LocalizedError {
         case missingInstalledModel(String)
         case emptyModelResponse
 
@@ -68,6 +88,24 @@ actor CactusAIService: AIService {
         let (model, _) = try await loadModelIfNeeded()
         _ = conversation
 
+        let promptLen = request.prompt.count
+        let imagesCount = request.imagePaths.count
+        let audioCount = request.audioPaths.count
+        let maxTokens = request.maxTokens ?? defaultMaxTokens
+        ycLog("[send] start promptLen=\(promptLen) images=\(imagesCount) audio=\(audioCount) maxTokens=\(maxTokens)")
+        let started = Date()
+
+        let heartbeat = Task.detached {
+            var ticks = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if Task.isCancelled { return }
+                ticks += 1
+                ycLog("[send] still running… ~\(ticks * 5)s")
+            }
+        }
+        defer { heartbeat.cancel() }
+
         CactusRuntime.resetModel(model)
         let payload = try Self.makeMessagesPayload(
             systemPrompt: systemPrompt,
@@ -75,16 +113,26 @@ actor CactusAIService: AIService {
             imagePaths: request.imagePaths,
             audioPaths: request.audioPaths
         )
-        let completion = try complete(
-            model: model,
-            messagesJSON: payload,
-            optionsJSON: makeOptionsJSON(maxTokens: request.maxTokens),
-            pcmData: request.audioPCMData
-        )
-        CactusRuntime.resetModel(model)
 
-        lastRuntimeStatsStore = completion.runtimeStats
-        return AIResponse(text: completion.text, runtimeStats: completion.runtimeStats)
+        do {
+            let completion = try complete(
+                model: model,
+                messagesJSON: payload,
+                optionsJSON: makeOptionsJSON(maxTokens: request.maxTokens),
+                pcmData: request.audioPCMData
+            )
+            CactusRuntime.resetModel(model)
+            let elapsed = Date().timeIntervalSince(started)
+            let decode = completion.runtimeStats.decodeTokensPerSecond ?? 0
+            ycLog("[send] done in \(String(format: "%.2f", elapsed))s textLen=\(completion.text.count) decode=\(String(format: "%.1f", decode))tok/s")
+            lastRuntimeStatsStore = completion.runtimeStats
+            return AIResponse(text: completion.text, runtimeStats: completion.runtimeStats)
+        } catch {
+            CactusRuntime.resetModel(model)
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[send] ERROR failed after \(String(format: "%.2f", elapsed))s error=\(error.localizedDescription)")
+            throw error
+        }
     }
 
     private func makeOptionsJSON(maxTokens: Int?) -> String {
@@ -153,13 +201,15 @@ actor CactusAIService: AIService {
         model: CactusModelHandle,
         messagesJSON: String,
         optionsJSON: String,
-        pcmData: Data?
+        pcmData: Data?,
+        onToken: (@Sendable (String) -> Void)? = nil
     ) throws -> (text: String, runtimeStats: AIRuntimeStats) {
         let rawResult = try CactusRuntime.complete(
             model: model,
             messagesJSON: messagesJSON,
             optionsJSON: optionsJSON,
-            pcmData: pcmData
+            pcmData: pcmData,
+            onToken: onToken
         )
 
         let envelope = try CactusRuntime.decodeCompletionEnvelope(from: rawResult)
@@ -175,7 +225,69 @@ actor CactusAIService: AIService {
         return (response, envelope.runtimeStats)
     }
 
-    static func makeMessagesPayload(
+    func sendStreaming(
+        request: AIRequest,
+        conversation: [Message],
+        onToken: @Sendable @escaping (String) -> Void
+    ) async throws -> AIResponse {
+        let (model, _) = try await loadModelIfNeeded()
+        _ = conversation
+
+        let promptLen = request.prompt.count
+        let imagesCount = request.imagePaths.count
+        let audioCount = request.audioPaths.count
+        let maxTokens = request.maxTokens ?? defaultMaxTokens
+        ycLog("[sendStreaming] start promptLen=\(promptLen) images=\(imagesCount) audio=\(audioCount) maxTokens=\(maxTokens)")
+        let started = Date()
+        let firstTokenFlag = FirstTokenLatch()
+
+        let heartbeat = Task.detached {
+            var ticks = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                if Task.isCancelled { return }
+                ticks += 1
+                ycLog("[sendStreaming] still running… ~\(ticks * 5)s")
+            }
+        }
+        defer { heartbeat.cancel() }
+
+        CactusRuntime.resetModel(model)
+        let payload = try Self.makeMessagesPayload(
+            systemPrompt: systemPrompt,
+            userContent: request.prompt,
+            imagePaths: request.imagePaths,
+            audioPaths: request.audioPaths
+        )
+
+        let wrappedOnToken: @Sendable (String) -> Void = { token in
+            firstTokenFlag.markIfFirst(elapsedSince: started)
+            onToken(token)
+        }
+
+        do {
+            let completion = try complete(
+                model: model,
+                messagesJSON: payload,
+                optionsJSON: makeOptionsJSON(maxTokens: request.maxTokens),
+                pcmData: request.audioPCMData,
+                onToken: wrappedOnToken
+            )
+            CactusRuntime.resetModel(model)
+            let elapsed = Date().timeIntervalSince(started)
+            let decode = completion.runtimeStats.decodeTokensPerSecond ?? 0
+            ycLog("[sendStreaming] done in \(String(format: "%.2f", elapsed))s textLen=\(completion.text.count) decode=\(String(format: "%.1f", decode))tok/s")
+            lastRuntimeStatsStore = completion.runtimeStats
+            return AIResponse(text: completion.text, runtimeStats: completion.runtimeStats)
+        } catch {
+            CactusRuntime.resetModel(model)
+            let elapsed = Date().timeIntervalSince(started)
+            ycLog("[sendStreaming] ERROR failed after \(String(format: "%.2f", elapsed))s error=\(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    nonisolated static func makeMessagesPayload(
         systemPrompt: String,
         userContent: String,
         imagePaths: [String] = [],

@@ -58,8 +58,10 @@ final class MainViewModel: ObservableObject {
 struct MainView: View {
     @ObservedObject var viewModel: MainViewModel
     @ObservedObject var workerDirectory: WorkerDirectoryService = .shared
+    @Environment(\.aiService) private var aiService
     let onExit: () -> Void
     @State private var glossaryExpanded = true
+    @State private var showingChat = false
 
     var body: some View {
         ZStack {
@@ -126,6 +128,27 @@ struct MainView: View {
                 onResolve: { toggleResolved(defect) },
                 onDismiss: dismissSelectedDefect
             )
+        }
+        .sheet(isPresented: $showingChat) {
+            ChatView(viewModel: ChatViewModel(
+                aiService: aiService,
+                defectSyncService: DefectSyncService(
+                    store: viewModel.store,
+                    syncService: viewModel.syncService,
+                    resolver: viewModel.resolver
+                ),
+                vocabulary: IFCVocabulary(
+                    storeys: viewModel.resolver.availableStoreys,
+                    spaces: viewModel.resolver.availableSpaces,
+                    elementTypes: viewModel.resolver.availableElementTypes,
+                    orientations: viewModel.resolver.availableOrientations
+                )
+            ))
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(Color.clear)
+            .presentationCornerRadius(28)
+            .presentationContentInteraction(.resizes)
         }
         .onChange(of: viewModel.tappedDefectId) { _, newValue in
             guard let newValue else { return }
@@ -203,11 +226,25 @@ struct MainView: View {
                 )
                 Spacer()
                 openIssuesBadge
+                newReportButton
                 modeToggle
             }
             .padding(.horizontal)
             .padding(.top, 10)
         }
+    }
+
+    private var newReportButton: some View {
+        Button {
+            showingChat = true
+        } label: {
+            Image(systemName: "plus")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 36, height: 36)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .accessibilityLabel("New report")
     }
 
     private var backButton: some View {

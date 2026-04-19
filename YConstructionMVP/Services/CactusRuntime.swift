@@ -4,12 +4,12 @@ import cactus
 typealias CactusModelHandle = UnsafeMutableRawPointer
 typealias CactusIndexHandle = UnsafeMutableRawPointer
 
-struct CactusIndexQueryMatch: Equatable, Sendable {
+nonisolated struct CactusIndexQueryMatch: Equatable, Sendable {
     let id: Int32
     let score: Float
 }
 
-struct CactusCompletionEnvelope: Decodable, Equatable, Sendable {
+nonisolated struct CactusCompletionEnvelope: Decodable, Equatable, Sendable {
     let success: Bool
     let error: String?
     let response: String?
@@ -41,7 +41,7 @@ struct CactusCompletionEnvelope: Decodable, Equatable, Sendable {
     }
 }
 
-enum CactusRuntimeError: LocalizedError {
+nonisolated enum CactusRuntimeError: LocalizedError {
     case initializationFailed(String)
     case completionFailed(String)
     case transcriptionFailed(String)
@@ -61,7 +61,7 @@ enum CactusRuntimeError: LocalizedError {
     }
 }
 
-enum CactusRuntime {
+nonisolated enum CactusRuntime {
     private static let outputBufferSize = 262_144
 
     private static let frameworkInitialized: Void = {
@@ -95,9 +95,14 @@ enum CactusRuntime {
         messagesJSON: String,
         optionsJSON: String?,
         toolsJSON: String? = nil,
-        pcmData: Data? = nil
+        pcmData: Data? = nil,
+        onToken: (@Sendable (String) -> Void)? = nil
     ) throws -> String {
         var outputBuffer = [CChar](repeating: 0, count: outputBufferSize)
+
+        let box: TokenCallbackBox? = onToken.map(TokenCallbackBox.init)
+        let cCallback: cactus_token_callback? = onToken == nil ? nil : cactusTokenTrampoline
+        let userData: UnsafeMutableRawPointer? = box.map { Unmanaged.passUnretained($0).toOpaque() }
 
         let result = outputBuffer.withUnsafeMutableBufferPointer { buffer in
             if let pcmData, !pcmData.isEmpty {
@@ -109,8 +114,8 @@ enum CactusRuntime {
                         buffer.count,
                         optionsJSON,
                         toolsJSON,
-                        nil,
-                        nil,
+                        cCallback,
+                        userData,
                         pcmBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self),
                         pcmData.count
                     )
@@ -124,12 +129,15 @@ enum CactusRuntime {
                 buffer.count,
                 optionsJSON,
                 toolsJSON,
-                nil,
-                nil,
+                cCallback,
+                userData,
                 nil,
                 0
             )
         }
+
+        // Keep the callback box alive across the blocking C call.
+        _ = box
 
         guard result >= 0 else {
             let responseText = String(cString: outputBuffer)
@@ -390,4 +398,24 @@ enum CactusRuntime {
         let cactusError = String(cString: cactus_get_last_error())
         return cactusError.isEmpty ? fallback : cactusError
     }
+}
+
+/// Retains the Swift closure across the C boundary. Passed via user_data so the
+/// `@convention(c)` trampoline can resolve back to the closure on each token.
+final class TokenCallbackBox: @unchecked Sendable {
+    let callback: @Sendable (String) -> Void
+    init(_ callback: @escaping @Sendable (String) -> Void) {
+        self.callback = callback
+    }
+}
+
+/// C-callable token dispatcher. Cactus invokes this from its generation thread;
+/// we unbox the Swift closure and forward the decoded token string.
+private let cactusTokenTrampoline: @convention(c) (
+    UnsafePointer<CChar>?, UInt32, UnsafeMutableRawPointer?
+) -> Void = { tokenPtr, _, userData in
+    guard let tokenPtr, let userData else { return }
+    let token = String(cString: tokenPtr)
+    let box = Unmanaged<TokenCallbackBox>.fromOpaque(userData).takeUnretainedValue()
+    box.callback(token)
 }
