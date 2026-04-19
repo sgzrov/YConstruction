@@ -824,28 +824,27 @@ final class ChatViewModel: ObservableObject {
     }
 
     /// After the hardcoded report upload, ask Gemma for one short follow-up
-    /// question and stream it to TTS. Wraps errors so a model hiccup doesn't
-    /// break the session — the upload already succeeded.
+    /// question and speak it via the same TTS path as the upload ack. The
+    /// coordinator returns an empty string if Gemma drifts off-topic — in
+    /// that case we skip the follow-up entirely instead of reading the drift.
+    /// Upload has already succeeded, so any error here is logged and swallowed.
     private func runReportInsight(for state: PhotoReportState) async {
-        let speaker = StreamingSentenceSpeaker(synthesizer: synthesizer)
         statusText = "Gemma is preparing a follow-up…"
         do {
-            let response = try await photoTurnCoordinator.generateReportInsight(
-                state: state,
-                onToken: { token in
-                    Task { @MainActor in speaker.ingest(token) }
-                }
-            )
-            speaker.flush()
-            let trimmed = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                appendMessage(Message(text: trimmed, sender: .assistant))
-                latestReply = trimmed
+            let response = try await photoTurnCoordinator.generateReportInsight(state: state)
+            let cleaned = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if cleaned.isEmpty {
+                ycLog("[runReportInsight] Gemma insight drifted — skipping spoken follow-up")
+            } else {
+                appendMessage(Message(text: cleaned, sender: .assistant))
+                latestReply = cleaned
                 lastRuntimeText = formatRuntimeStats(response.runtimeStats)
+                // Queue after the "Uploaded to Supabase." ack so it doesn't
+                // interrupt mid-utterance and the voice stays consistent.
+                speakQueued(cleaned)
             }
             statusText = "Ready on iPhone."
         } catch {
-            // Upload already completed — don't panic if the insight call fails.
             ycLog("[runReportInsight] insight generation failed: \(error.localizedDescription)")
         }
     }
@@ -959,6 +958,22 @@ final class ChatViewModel: ObservableObject {
         utterance.prefersAssistiveTechnologySettings = true
 
         synthesizer.stopSpeaking(at: .immediate)
+        synthesizer.speak(utterance)
+    }
+
+    /// Queue an utterance without interrupting the currently-playing one. Used
+    /// for "follow-up" messages that should play AFTER a prior `speak(...)`
+    /// has finished — e.g. the Gemma insight after "Uploaded to Supabase."
+    /// Config is identical to `speak()` so the voice matches exactly.
+    private func speakQueued(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        ycLog("[speakQueued] len=\(trimmed.count) preview=\"\(trimmed.prefix(160))\"")
+        guard !trimmed.isEmpty else { return }
+
+        let utterance = AVSpeechUtterance(string: trimmed)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = 0.5
+        utterance.prefersAssistiveTechnologySettings = true
         synthesizer.speak(utterance)
     }
 
@@ -1189,7 +1204,11 @@ private final class StreamingSentenceSpeaker {
 
     init(synthesizer: AVSpeechSynthesizer) {
         self.synthesizer = synthesizer
-        synthesizer.stopSpeaking(at: .immediate)
+        // Note: do NOT call stopSpeaking(at: .immediate) here — it clips the
+        // previous utterance (e.g., "Uploaded to Supabase") mid-sentence and
+        // AVSpeechSynthesizer occasionally picks a different voice track when
+        // re-started. We rely on AVSpeechSynthesizer's built-in queueing so
+        // streamed sentences play right after the ack.
     }
 
     /// Append a new token; speak any newly-complete sentences in the buffer.
@@ -1213,9 +1232,13 @@ private final class StreamingSentenceSpeaker {
     private func speak(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Match ChatViewModel.speak()'s utterance config exactly — same voice,
+        // same rate, same assistive flag — so streamed sentences sound like
+        // a single continuous speaker rather than a second voice.
         let utterance = AVSpeechUtterance(string: trimmed)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         utterance.rate = 0.5
+        utterance.prefersAssistiveTechnologySettings = true
         synthesizer.speak(utterance)
         didSpeakAnything = true
     }

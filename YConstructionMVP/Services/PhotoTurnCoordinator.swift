@@ -530,37 +530,69 @@ actor PhotoTurnCoordinator {
         "How critical is it, and what level is it on?"
 
     /// After the hardcoded 2-turn upload lands, ask Gemma for one short
-    /// follow-up question related to the defect. Streams tokens so the caller
-    /// can speak the answer as it arrives. Returns the final buffered text in
-    /// case the caller wants to append it to a chat log.
+    /// follow-up question about the specific defect.
     ///
-    /// Non-blocking to the upload — the caller decides when to wait.
-    func generateReportInsight(
-        state: PhotoReportState,
-        onToken: @Sendable @escaping (String) -> Void
-    ) async throws -> AIResponse {
-        let fieldsLine = state.fields.compactSummaryLines().joined(separator: ", ")
-        let transcript = state.combinedTranscript
+    /// Non-streaming on purpose: we wait for the full reply, strip it to a
+    /// single question, then the caller speaks it via the same TTS path as
+    /// the upload ack. Streaming was causing drift to be spoken before the
+    /// post-filter could reject it.
+    ///
+    /// Returns an AIResponse whose `text` is either a cleaned single
+    /// question or an empty string (meaning Gemma drifted and we should say
+    /// nothing extra).
+    func generateReportInsight(state: PhotoReportState) async throws -> AIResponse {
+        let defectType = PhotoReportFields.normalizedText(state.fields.defectType) ?? "defect"
+        let severity = PhotoReportFields.normalizedText(state.fields.severity) ?? "unspecified"
+        let storey = PhotoReportFields.normalizedText(state.fields.storey) ?? "an unspecified level"
+        let elementType = PhotoReportFields.normalizedText(state.fields.elementType) ?? "surface"
+        let orientation = PhotoReportFields.normalizedText(state.fields.orientation)
+        let orientationClause = orientation.map { " facing \($0)" } ?? ""
+
         let prompt = """
-        A construction worker just logged a defect. Details:
-        \(fieldsLine)
+        A worker reported a \(severity) \(defectType) on the \(elementType)\(orientationClause), on \(storey).
 
-        What they said:
-        \(transcript)
+        Reply with exactly ONE short follow-up question (under 15 words) that a supervisor would ask to plan repair or investigation. Be specific to this defect. Do not restate the details. Do not add any explanation. End with a question mark.
 
-        In one sentence, ask one short helpful follow-up question so the team
-        can investigate or plan repair. Do not repeat the details back.
+        Example for "high crack on wall, Level 1, east": "Is the crack continuing to widen, or has it stabilized?"
+
+        Your question:
         """
         let started = Date()
-        ycLog("[generateReportInsight] start — prompting Gemma for one follow-up question")
-        let response = try await aiService.sendStreaming(
-            request: AIRequest(prompt: prompt, maxTokens: 64),
-            conversation: [],
-            onToken: onToken
+        ycLog("[generateReportInsight] start — defect=\(defectType) severity=\(severity) storey=\(storey)")
+        let response = try await aiService.send(
+            request: AIRequest(prompt: prompt, maxTokens: 40),
+            conversation: []
         )
         let elapsed = Date().timeIntervalSince(started)
-        ycLog("[generateReportInsight] done in \(String(format: "%.2f", elapsed))s textLen=\(response.text.count)")
-        return response
+        let cleaned = Self.cleanInsightQuestion(response.text) ?? ""
+        ycLog("[generateReportInsight] done in \(String(format: "%.2f", elapsed))s textLen=\(response.text.count) cleaned=\"\(cleaned)\"")
+        return AIResponse(text: cleaned, runtimeStats: response.runtimeStats)
+    }
+
+    /// Reject Gemma insight output that isn't a single question.
+    /// Returns nil when the response drifted off-topic (no question mark, or
+    /// longer than a reasonable follow-up sentence).
+    private static func cleanInsightQuestion(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Take the first question-ending line only; Gemma sometimes adds an
+        // explanation underneath.
+        let firstLine = trimmed
+            .split(whereSeparator: { $0.isNewline })
+            .first
+            .map(String.init) ?? trimmed
+
+        // Keep only up to the first `?` so we don't read a wall of text.
+        if let mark = firstLine.firstIndex(of: "?") {
+            let candidate = String(firstLine[...mark])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // Guardrail: reasonable length for a single follow-up question.
+            if candidate.count >= 8 && candidate.count <= 160 {
+                return candidate
+            }
+        }
+        return nil
     }
 
     /// Deterministic two-turn report flow:
