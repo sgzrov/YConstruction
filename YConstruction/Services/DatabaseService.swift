@@ -194,6 +194,32 @@ nonisolated final class DatabaseService: @unchecked Sendable {
         }
     }
 
+    func deleteAll(projectId: String) throws {
+        try dbPool.write { db in
+            _ = try Defect
+                .filter(Defect.Columns.projectId == projectId)
+                .deleteAll(db)
+        }
+    }
+
+    func delete(id: String) throws {
+        try dbPool.write { db in
+            _ = try Defect
+                .filter(Defect.Columns.id == id)
+                .deleteAll(db)
+        }
+    }
+
+    func ids(projectId: String) throws -> [String] {
+        try dbPool.read { db in
+            try String.fetchAll(
+                db,
+                sql: "SELECT id FROM defects WHERE project_id = ?",
+                arguments: [projectId]
+            )
+        }
+    }
+
     func markResolved(id: String, resolved: Bool = true) throws {
         try dbPool.write { db in
             try db.execute(

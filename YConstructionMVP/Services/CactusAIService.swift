@@ -293,20 +293,22 @@ actor CactusAIService: AIService {
         imagePaths: [String] = [],
         audioPaths: [String] = []
     ) throws -> String {
-        var messages: [ChatPayloadMessage] = []
+        // Gemma instruction-tuned models only support `user` and `model` roles —
+        // a `system` turn is either dropped or parsed as an invalid role by the
+        // chat template, which confuses the model. Prepend the system prompt
+        // into the first user message instead.
+        let mergedContent = systemPrompt.isEmpty
+            ? userContent
+            : "\(systemPrompt)\n\n\(userContent)"
 
-        if !systemPrompt.isEmpty {
-            messages.append(ChatPayloadMessage(role: "system", content: systemPrompt))
-        }
-
-        messages.append(
+        let messages: [ChatPayloadMessage] = [
             ChatPayloadMessage(
                 role: "user",
-                content: userContent,
+                content: mergedContent,
                 images: imagePaths,
                 audio: audioPaths
             )
-        )
+        ]
 
         let encoder = JSONEncoder()
         // Cactus's current path-array parser expects plain POSIX paths and does

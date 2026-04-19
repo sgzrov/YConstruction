@@ -9,7 +9,7 @@ struct Scene3DView: UIViewRepresentable {
     func makeUIView(context: Context) -> SCNView {
         let view = SCNView(frame: .zero)
         view.scene = renderer.scene
-        view.allowsCameraControl = true
+        view.allowsCameraControl = (mode == .perspective3D)
         view.autoenablesDefaultLighting = false
         view.backgroundColor = UIColor.systemBackground
         view.antialiasingMode = .multisampling4X
@@ -18,14 +18,18 @@ struct Scene3DView: UIViewRepresentable {
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.onTap(_:)))
         view.addGestureRecognizer(tap)
         context.coordinator.view = view
+        context.coordinator.lastMode = mode
 
         return view
     }
 
     func updateUIView(_ uiView: SCNView, context: Context) {
-        uiView.pointOfView = renderer.pointOfView(for: mode)
-        uiView.allowsCameraControl = (mode == .perspective3D)
         context.coordinator.parent = self
+        if context.coordinator.lastMode != mode || uiView.pointOfView == nil {
+            uiView.pointOfView = renderer.pointOfView(for: mode)
+            uiView.allowsCameraControl = (mode == .perspective3D)
+            context.coordinator.lastMode = mode
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -36,6 +40,7 @@ struct Scene3DView: UIViewRepresentable {
     final class Coordinator: NSObject {
         var parent: Scene3DView
         weak var view: SCNView?
+        var lastMode: SceneCameraMode?
 
         init(parent: Scene3DView) { self.parent = parent }
 

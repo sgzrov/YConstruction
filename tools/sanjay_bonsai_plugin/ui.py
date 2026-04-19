@@ -93,7 +93,24 @@ class YCON_OT_load_issue(bpy.types.Operator):
             self.report({"ERROR"}, f"Bonsai could not open BCF: {exc}")
             return {"CANCELLED"}
 
-        self.report({"INFO"}, f"Loaded {os.path.basename(self._dest_path)}")
+        jumped = False
+        try:
+            topics = context.scene.BCFProperties.topics
+            if len(topics):
+                bpy.ops.bim.view_bcf_topic(topic_guid=topics[0].name)
+                bpy.ops.bim.activate_bcf_viewpoint()
+                jumped = True
+        except Exception as exc:
+            self.report(
+                {"WARNING"},
+                f"Opened BCF but could not activate viewpoint: {exc}",
+            )
+
+        name = os.path.basename(self._dest_path)
+        self.report(
+            {"INFO"},
+            f"Loaded {name}" + (" — jumped to viewpoint" if jumped else ""),
+        )
         return {"FINISHED"}
 
     def cancel(self, context):
@@ -225,10 +242,15 @@ class YCON_PT_issues(bpy.types.Panel):
                 text=f"{issue.reporter} · {_short_ts(issue.timestamp)}"
                 + (" · resolved" if issue.resolved else ""),
             )
-            op = box.operator(
-                YCON_OT_load_issue.bl_idname, icon="IMPORT",
-            )
-            op.issue_id = issue.id
+            if issue.bcf_path:
+                op = box.operator(
+                    YCON_OT_load_issue.bl_idname, icon="IMPORT",
+                )
+                op.issue_id = issue.id
+            else:
+                row = box.row()
+                row.enabled = False
+                row.label(text="No BCF attached", icon="UNLINKED")
 
 
 # ---------- Formatting ----------

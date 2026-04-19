@@ -97,7 +97,7 @@ actor CactusService {
     static func validatedGemmaModelPath() throws -> String {
         try validatedModelPath(
             path: gemmaModelPath,
-            displayName: "Gemma 4 E2B"
+            displayName: "Gemma 3n E2B"
         )
     }
 

@@ -96,6 +96,7 @@ final class BCFEmitterService: Sendable {
     // MARK: - Convenience
 
     func emit(from defect: Defect, ifcFilename: String = "duplex.ifc") throws -> URL {
+        let pose = cameraPose(for: defect)
         let input = BCFInput(
             topicGuid: defect.id,
             ifcGuid: defect.guid.isEmpty ? nil : defect.guid,
@@ -107,8 +108,8 @@ final class BCFEmitterService: Sendable {
             priority: priority(for: defect.severity),
             author: defect.reporter,
             creationDate: defect.timestamp,
-            cameraViewPoint: cameraViewPoint(for: defect),
-            cameraDirection: SIMD3(-1, -1, -0.3),
+            cameraViewPoint: pose.position,
+            cameraDirection: pose.direction,
             cameraUpVector: SIMD3(0, 0, 1),
             fieldOfView: 60,
             snapshotPNG: defect.photoPath.flatMap { try? Data(contentsOf: URL(fileURLWithPath: $0)) }
@@ -243,8 +244,27 @@ final class BCFEmitterService: Sendable {
         return lines.joined(separator: "\n")
     }
 
-    private func cameraViewPoint(for d: Defect) -> SIMD3<Double> {
-        SIMD3(d.centroidX + 5, d.centroidY + 5, d.centroidZ + 2)
+    private func cameraPose(for d: Defect) -> (position: SIMD3<Double>, direction: SIMD3<Double>) {
+        let centroid = SIMD3(d.centroidX, d.centroidY, d.centroidZ)
+        let normal = outwardNormal(for: d.orientation)
+        let standoff = 4.0
+        let position = centroid + normal * standoff + SIMD3(0.0, 0.0, 1.0)
+        return (position, -normal)
+    }
+
+    private func outwardNormal(for orientation: String?) -> SIMD3<Double> {
+        switch orientation?.lowercased() {
+        case "east":  return SIMD3( 1.0,  0.0, 0.0)
+        case "west":  return SIMD3(-1.0,  0.0, 0.0)
+        case "north": return SIMD3( 0.0,  1.0, 0.0)
+        case "south": return SIMD3( 0.0, -1.0, 0.0)
+        default:      return normalized(SIMD3(1.0, 1.0, 0.3))
+        }
+    }
+
+    private func normalized(_ v: SIMD3<Double>) -> SIMD3<Double> {
+        let len = (v.x * v.x + v.y * v.y + v.z * v.z).squareRoot()
+        return len > 0 ? v / len : v
     }
 
     private func priority(for severity: Severity) -> String {

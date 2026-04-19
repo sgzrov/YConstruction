@@ -116,6 +116,23 @@ final class SceneRendererService {
         print("[SceneRenderer] loaded nodes=\(nodeCount) meshes=\(meshCount) materials=\(materialCount)")
     }
 
+    /// Remove every node under the scene root that isn't the markers layer or
+    /// a camera/light. Use when the cloud-side project bundle is wiped and we
+    /// need to drop the in-memory GLB geometry without relaunching the app.
+    func clearModel() {
+        let keep: Set<ObjectIdentifier> = [
+            ObjectIdentifier(markersNode),
+            ObjectIdentifier(pointOfView3D),
+            ObjectIdentifier(pointOfView2D),
+        ]
+        for child in rootNode.childNodes where !keep.contains(ObjectIdentifier(child)) {
+            if child.camera != nil || child.light != nil { continue }
+            child.removeFromParentNode()
+        }
+        modelBounds = (SCNVector3(-5, -5, 0), SCNVector3(5, 5, 5))
+        frameCameras(to: modelBounds.min, max: modelBounds.max)
+    }
+
     /// Hide any glb mesh whose IFC GUID isn't in the resolver's element index.
     /// IfcConvert emits every IFC product as a mesh named `product-{uuid}-body`.
     /// Our element_index.json only keeps walls/doors/windows/spaces — so

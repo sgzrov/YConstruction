@@ -53,6 +53,12 @@ final class MainViewModel: ObservableObject {
 
     func markBooted() { booted = true }
     var isBooted: Bool { booted }
+
+    func resetBootState() {
+        booted = false
+        isLoading = true
+        loadError = nil
+    }
 }
 
 struct MainView: View {
@@ -158,6 +164,12 @@ struct MainView: View {
         }
         .onChange(of: viewModel.store.defects) { _, newValue in
             viewModel.renderer.syncMarkers(with: newValue)
+            guard let selectedId = viewModel.selectedDefect?.id else { return }
+            if let refreshed = newValue.first(where: { $0.id == selectedId }) {
+                viewModel.selectedDefect = refreshed
+            } else {
+                dismissSelectedDefect()
+            }
         }
         .onChange(of: viewModel.mode) { _, newValue in
             viewModel.renderer.setMode(newValue)
@@ -166,6 +178,11 @@ struct MainView: View {
         .onReceive(viewModel.syncService.$isSyncing) { viewModel.isSyncing = $0 }
         .onReceive(viewModel.syncService.$lastSyncedAt) { date in
             if let date { viewModel.store.noteSynced(at: date) }
+        }
+        .onReceive(viewModel.syncService.$bundleInvalidationTick.dropFirst()) { _ in
+            viewModel.renderer.clearModel()
+            viewModel.resetBootState()
+            Task { await boot() }
         }
     }
 
@@ -225,7 +242,6 @@ struct MainView: View {
                     isSyncing: viewModel.isSyncing
                 )
                 Spacer()
-                openIssuesBadge
                 newReportButton
                 modeToggle
             }
@@ -258,27 +274,6 @@ struct MainView: View {
         .accessibilityLabel("Back to projects")
     }
 
-    @ViewBuilder
-    private var openIssuesBadge: some View {
-        let openCount = viewModel.store.defects.filter { !$0.resolved }.count
-        if openCount > 0 {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(.red)
-                    .frame(width: 8, height: 8)
-                Text("\(openCount) OPEN")
-                    .font(.caption.weight(.bold))
-                    .tracking(0.8)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .foregroundStyle(.red)
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .glassEffect(.regular, in: .capsule)
-        }
-    }
-
     private var modeToggle: some View {
         Button {
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -287,11 +282,15 @@ struct MainView: View {
         } label: {
             Text(viewModel.mode == .perspective3D ? "2D" : "3D")
                 .font(.callout.weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 14)
-                .frame(height: 36)
+                .frame(minWidth: 52, minHeight: 36)
                 .glassEffect(.regular.interactive(), in: .capsule)
         }
+        .layoutPriority(1)
     }
 
     private func dismissSelectedDefect() {

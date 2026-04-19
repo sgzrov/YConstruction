@@ -137,7 +137,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     var canUseMicrophone: Bool {
-        isModelReady && !isPreparingModel && !isLoading && !isImportingModel && !isCapturingPhoto
+        !isCapturingPhoto
     }
 
     var canCapturePhotoNow: Bool {
@@ -242,11 +242,6 @@ final class ChatViewModel: ObservableObject {
     }
 
     func toggleListening() {
-        guard isModelReady else {
-            statusText = isPreparingModel ? "\(modelDisplayName) is still loading locally." : "Import \(modelDisplayName) first."
-            return
-        }
-
         if isListening {
             statusText = "Sending now..."
             finalizeCaptureAndSend(forceSend: true)
