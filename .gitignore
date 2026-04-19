@@ -39,3 +39,6 @@ skills-lock.json
 # Stale pre-merge copy of the cactus xcframework (canonical path is
 # cactus/apple/cactus-ios.xcframework)
 cactus-ios.xcframework
+
+# Regenerable Blender extension archive (rebuild with `zip -r yconstruction_sync.zip sanjay_bonsai_plugin`)
+tools/yconstruction_sync.zip

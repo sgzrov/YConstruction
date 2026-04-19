@@ -300,7 +300,7 @@ actor PhotoTurnCoordinator {
             case readyToUpload = "ready_to_upload"
             case assistantMessage = "assistant_message"
             case blockingMissingFields = "blocking_missing_fields"
-            case explicitlyUnknownFields = "explicitly_unknown_fields"
+            case explicitlyUnknownFields = "skipped_fields"
             case fields
         }
     }
@@ -939,7 +939,7 @@ actor PhotoTurnCoordinator {
         let vocabBlock = vocabulary.promptConstraintBlock()
         let vocabSection = vocabBlock.isEmpty ? "" : "\n\(vocabBlock)\n"
         let known = state.fields.compactSummaryLines().joined(separator: "\n")
-        let unknown = state.explicitlyUnknownFields.sorted().joined(separator: ", ")
+        let skipped = state.explicitlyUnknownFields.sorted().joined(separator: ", ")
         let transcriptLines = state.transcriptSnippets.enumerated()
             .map { idx, snippet in
                 "T\(idx + 1): \(snippet.trimmingCharacters(in: .whitespacesAndNewlines))"
@@ -955,7 +955,7 @@ actor PhotoTurnCoordinator {
         - Never ask broad assistant questions like "What can I do for you?" or "How can I help?"
         - Use the full transcript history. The latest line usually answers the previous follow-up.
         - Do not ask for any field that is already known.
-        - If the worker says they do not know a value, keep that field null and add its field name to explicitly_unknown_fields.
+        - If the worker says they do not know a value, keep that field null and add its field name to skipped_fields.
 
         Transcript history:
         \(transcriptLines)
@@ -963,14 +963,14 @@ actor PhotoTurnCoordinator {
         Known fields:
         \(known)
 
-        Marked unknown: \(unknown.isEmpty ? "none" : unknown)
+        Fields the worker skipped: \(skipped.isEmpty ? "none" : skipped)
         \(vocabSection)
         Required fields before upload: defect_type, severity (low|medium|high|critical), storey, element_type.
         Optional fields: space, orientation, guid, ai_safety_notes.
 
         Field rules:
         - Use real values from the transcript or null.
-        - NEVER write "string", "or null", "<...>", "unknown", or schema placeholders as actual field values.
+        - Use null (not a placeholder word, not "<...>", not a schema hint) when a value is absent.
         - ai_safety_notes should be a brief factual note only when the worker mentioned a safety concern or useful context.
         - If severity is present, it must be exactly one of: low, medium, high, critical.
 
@@ -981,10 +981,10 @@ actor PhotoTurnCoordinator {
         - Good assistant_message: "How severe is the hole: low, medium, high, or critical?"
         - Bad assistant_message: "What can I do for you?"
 
-        When all required fields are present or explicitly unknown, set ready_to_upload=true.
+        When all required fields are either present or skipped, set ready_to_upload=true.
 
         Return this JSON shape exactly:
-        {"ready_to_upload":false,"assistant_message":"How severe is the crack: low, medium, high, or critical?","blocking_missing_fields":["severity"],"explicitly_unknown_fields":[],"fields":{"defect_type":"crack","severity":null,"storey":"Level 1","space":null,"orientation":"west","element_type":"wall","guid":null,"ai_safety_notes":null}}
+        {"ready_to_upload":false,"assistant_message":"How severe is the crack: low, medium, high, or critical?","blocking_missing_fields":["severity"],"skipped_fields":[],"fields":{"defect_type":"crack","severity":null,"storey":"Level 1","space":null,"orientation":"west","element_type":"wall","guid":null,"ai_safety_notes":null}}
         """
     }
 
@@ -1027,11 +1027,11 @@ actor PhotoTurnCoordinator {
         \(state.questionSummary ?? state.combinedTranscript)
 
         Search context:
-        storey=\(preferred(state.storey, nil) ?? "unknown")
-        space=\(preferred(state.space, nil) ?? "unknown")
-        orientation=\(preferred(state.orientation, nil) ?? "unknown")
-        element_type=\(preferred(state.elementType, nil) ?? "unknown")
-        timeframe=\(preferred(state.timeframeHint, nil) ?? "unknown")
+        storey=\(preferred(state.storey, nil) ?? "not specified")
+        space=\(preferred(state.space, nil) ?? "not specified")
+        orientation=\(preferred(state.orientation, nil) ?? "not specified")
+        element_type=\(preferred(state.elementType, nil) ?? "not specified")
+        timeframe=\(preferred(state.timeframeHint, nil) ?? "not specified")
 
         Retrieved evidence:
         \(evidence)

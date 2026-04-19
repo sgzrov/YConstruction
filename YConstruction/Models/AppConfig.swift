@@ -1,12 +1,12 @@
 import Foundation
 
 nonisolated enum AppConfig {
-    static let demoProjectId = "duplex-demo-001"
+    static let demoProjectId = "conference-room-002"
 
-    static let elementIndexProjectId = "duplex-demo-001"
+    static let elementIndexProjectId = "conference-room-002"
 
     static let whisperModelDirName = "whisper-base"
-    static let gemmaModelDirName = "gemma-4-e2b-it"
+    static let gemmaModelDirName = "gemma-3n-e2b-it"
 
     static var reporterId: String {
         get {

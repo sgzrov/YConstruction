@@ -58,6 +58,8 @@ private struct Canvas2DOverlay: UIViewRepresentable {
         var frameSize: CGSize = .zero
         weak var coordinator: Coordinator?
 
+        private let overlayPadding: CGFloat = 24
+
         override init(frame: CGRect) {
             super.init(frame: frame)
             backgroundColor = .clear
@@ -130,12 +132,18 @@ private struct Canvas2DOverlay: UIViewRepresentable {
 
             let padX: CGFloat = 8
             let padY: CGFloat = 3
-            let chipRect = CGRect(
+            var chipRect = CGRect(
                 x: anchor.x - (textSize.width + padX * 2) / 2,
                 y: anchor.y - (textSize.height + padY * 2),
                 width: textSize.width + padX * 2,
                 height: textSize.height + padY * 2
             )
+
+            let safeInset: CGFloat = 8
+            let maxX = max(safeInset, bounds.width - chipRect.width - safeInset)
+            let maxY = max(safeInset, bounds.height - chipRect.height - safeInset)
+            chipRect.origin.x = min(max(chipRect.origin.x, safeInset), maxX)
+            chipRect.origin.y = min(max(chipRect.origin.y, safeInset), maxY)
 
             let path = UIBezierPath(roundedRect: chipRect, cornerRadius: chipRect.height / 2)
             ctx.setFillColor(color.cgColor)
@@ -157,8 +165,10 @@ private struct Canvas2DOverlay: UIViewRepresentable {
             let camPos = renderer?.pointOfView2D.position ?? SCNVector3Zero
             let relX = CGFloat(x) - CGFloat(camPos.x)
             let relY = CGFloat(y) - CGFloat(camPos.y)
-            let screenX = (relX / (orthoScale * aspect)) * (frameSize.width / 2) + frameSize.width / 2
-            let screenY = (-relY / orthoScale) * (frameSize.height / 2) + frameSize.height / 2
+            let drawableWidth = max(frameSize.width - overlayPadding * 2, 1)
+            let drawableHeight = max(frameSize.height - overlayPadding * 2, 1)
+            let screenX = (relX / (orthoScale * aspect)) * (drawableWidth / 2) + frameSize.width / 2
+            let screenY = (-relY / orthoScale) * (drawableHeight / 2) + frameSize.height / 2
             _ = z
             return CGPoint(x: screenX, y: screenY)
         }

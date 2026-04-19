@@ -43,6 +43,10 @@ struct WorkerGlossaryView: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(workers) { worker in
                 row(for: worker)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // Consume taps so they do not reach the SceneKit view behind the glossary.
+                    }
             }
             if workers.isEmpty {
                 Text("No defects yet")

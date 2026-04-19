@@ -161,7 +161,7 @@ struct ChatView: View {
                 } label: {
                     ZStack {
                         Circle()
-                            .fill(viewModel.canUseMicrophone ? (viewModel.isListening ? Color.red : Color.accentColor) : Color.secondary.opacity(0.35))
+                            .fill(viewModel.isListening ? Color.red : Color.blue)
                             .frame(width: 72, height: 72)
 
                         Image(systemName: viewModel.isListening ? "stop.fill" : "mic.fill")

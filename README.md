@@ -1,167 +1,163 @@
-# YConstructionMVP
+<p align="center">
+  <img src="docs/logo.png" alt="YConstruction logo" width="220">
+</p>
 
-Minimal SwiftUI iPhone field app wired for local Cactus + Gemma 3n E2B inference, without bundling the model into the app itself.
+<h1 align="center">YConstruction</h1>
 
-## What is included
+<p align="center">
+  <em>Voice-first construction defect reporting on iPhone — fully on-device AI
+  via <a href="https://github.com/cactus-compute/cactus">Cactus</a> (Gemma 3n E2B +
+  Whisper + Qwen3 embeddings for on-device RAG), wired to a BIM (IFC) model and a
+  Blender review workflow for the architect.</em>
+</p>
 
-- SwiftUI iPhone app target
-- Vendored `cactus/apple/cactus-ios.xcframework` so the app builds without checking a full local Cactus workspace into git
-- Rear-camera wiring kept in the app, but disabled for the current Gemma 3n transcript-first path
-- Local microphone capture with pause-based auto-send
-- `Message` model
-- `ChatViewModel`
-- `AIService` protocol
-- `CactusRuntime` Swift wrapper over the real Cactus framework
-- `CactusAIService` that prewarms a locally installed Gemma 3n E2B model and answers through `cactus_complete`
-- `LocalModelStore` for importing and resolving the model from app-accessible storage
-- `MockAIService` kept only for previews and fallback development
+---
 
-## What is intentionally not checked in
+## The idea
 
-- Model folders under `cactus/weights/`
-- Local Python environments like `venv/` and `cactus/venv/`
-- The rest of a local `cactus/` source checkout outside the vendored iOS framework
-- The separate `voice-agents-hack/` sandbox
+A site worker walks the building, holds up their iPhone, and says what's wrong:
 
-## Project structure
+> *"Crack in the drywall, north wall of room A204, second floor. Looks about a foot long."*
 
-```text
-YConstruction/
-├── README.md
-├── cactus/
-│   └── apple/
-│       └── cactus-ios.xcframework
-├── YConstructionMVP.xcodeproj/
-│   └── project.pbxproj
-└── YConstructionMVP/
-    ├── Assets.xcassets/
-    ├── Models/
-    │   └── Message.swift
-    ├── Services/
-    │   ├── AIService.swift
-    │   ├── CactusAIService.swift
-    │   ├── CactusRuntime.swift
-    │   ├── LocalModelStore.swift
-    │   └── MockAIService.swift
-    ├── ViewModels/
-    │   └── ChatViewModel.swift
-    ├── Views/
-    │   └── ChatView.swift
-    └── YConstructionMVPApp.swift
-```
+The phone takes a photo, transcribes the voice locally, and a local Gemma 3n
+model structures the defect against the project's IFC model — storey, space,
+orientation, element type, IFC GUID. No signal, no cloud LLM, no typing.
 
-## Current status
+The defect syncs to Supabase as a BCF topic. The architect at HQ opens Blender
+with the Bonsai BIM add-on, clicks a row in the **YConstruction Sync** sidebar,
+and the defect appears directly in Bonsai's BCF Topics panel — photo, camera
+viewpoint, transcript, everything. They comment, change status, hit **Push
+Reply**, and the worker sees it on their phone.
 
-- The app launches with `CactusAIService`, not the mock service.
-- The app captures local PCM audio from the iPhone mic.
-- Voice turns are recorded locally, transcribed, and then sent to Gemma 3n as a short text request.
-- Camera context is currently disabled because the active Cactus Gemma 3n path is text-only in this app.
-- The app prewarms the local Gemma model before enabling the mic.
-- The app auto-sends after you pause speaking.
-- Replies are shown on-screen and spoken back out loud.
-- The last run surfaces local Cactus runtime metrics such as RAM usage and latency.
+Closed loop: site → model → architect → site.
 
-## One-time local setup
+## Why it's interesting
 
-### 1. The Cactus Apple framework is already vendored
+- **On-device Gemma 3n E2B + Whisper** — via the [Cactus](https://github.com/cactus-compute/cactus)
+  framework. No API keys, works on an offline job site.
+- **IFC-grounded structuring** — the model is constrained to a closed-set
+  vocabulary (the actual storeys / spaces / element types from the loaded IFC),
+  so the defect lands on a real building element instead of free text.
+- **BCF as the wire format** — the file the architect receives is a standards-
+  compliant `.bcfzip`, not a bespoke JSON, so it slots into any BIM tool that
+  speaks BCF.
+- **The architect stays in Blender** — no extra web dashboard, no browser tab.
+  The review happens inside Bonsai's existing BCF UI.
 
-This repo already includes:
+## Architecture
 
 ```text
-/Users/sangeetasinha/Documents/YConstruction/cactus/apple/cactus-ios.xcframework
+┌───────────────────────────┐       ┌──────────────────┐       ┌───────────────────────┐
+│  iPhone — YConstruction   │       │    Supabase      │       │  Mac — Blender+Bonsai │
+│                           │       │                  │       │                       │
+│  Voice  ──► Whisper       │       │  photos bucket   │       │  Sidebar panel polls  │
+│  Photo  ──► Gemma 3n E2B  │ ───►  │  issues bucket   │  ───► │  issues bucket every  │
+│  IFC    ──► struct defect │       │  projects bucket │       │  5 s, loads BCF into  │
+│                           │       │  Postgres + RLS  │       │  bim.load_bcf_project │
+│  ▲ realtime replies   ◄───────────┤                  │◄──────┤  ▲ push BCF reply     │
+└───────────────────────────┘       └──────────────────┘       └───────────────────────┘
 ```
 
-If you need to refresh that framework, build it from a separate upstream Cactus checkout and replace the vendored `cactus-ios.xcframework` in this repo.
+## Repo layout
 
-### 2. Download the Gemma 3n E2B weights with Cactus installed separately
+```text
+YConstruction/                  Main SwiftUI iPhone app (the one you build & run)
+├── YConstructionApp.swift      App entry — picks a project, hands off to MainView
+├── Cactus.swift                Swift bindings to the cactus-ios xcframework (FFI)
+├── Models/                     Defect, Severity, ElementIndex, IfcGuid, AppConfig…
+├── Services/
+│   ├── CactusService.swift     Manages Gemma + Whisper model handles
+│   ├── GemmaService.swift      High-level Gemma prompts (report / query / RAG)
+│   ├── SceneRendererService    SceneKit renderer for the GLB (3D + 2D overlay)
+│   ├── BCFEmitterService.swift Builds a BCF topic zip from a Defect
+│   ├── DatabaseService.swift   Supabase Postgres reads/writes
+│   ├── SyncService.swift       Online/offline queue + realtime subscription
+│   └── …
+├── Views/                      Scene3D/2D, MainView, DetailSheet, SyncStatusBadge…
+└── Resources/
+    ├── DemoProject/            duplex.ifc + duplex.glb + element_index.json
+    └── SupabaseConfig.plist    URL + anon key + bucket names
 
-This app now targets a transcript-first `Gemma 3n E2B` path on iPhone.
+YConstructionMVP/               Pre-production voice-chat MVP kept as a reference
+                                (ChatView + ChatViewModel + PhotoTurnCoordinator).
+                                Its Services are also compiled into the main app.
+
+cactus/apple/cactus-ios.xcframework/
+                                Vendored Cactus iOS framework (arm64 device +
+                                arm64 simulator). x86_64 simulator is NOT
+                                supported — set ARCHS=arm64 on Intel Macs.
+
+tools/sanjay_bonsai_plugin/     Blender 4.2+ extension. Sidebar in Blender that
+                                polls Supabase, loads defects into Bonsai, and
+                                pushes BCF replies back.
+
+docs/logo.png                   Project logo (generated via Nano Banana / Gemini).
+```
+
+## Local setup
+
+### iPhone app
+
+1. **Open** `YConstruction.xcodeproj` in Xcode.
+2. **Sign** the target with your team + a unique bundle ID.
+3. **Supabase** — edit `YConstruction/Resources/SupabaseConfig.plist` with your
+   project URL and anon/publishable key.
+4. **Build & run** on a physical iPhone (arm64 only; a simulator build on Apple
+   Silicon also works).
+5. **Put the model weights on the phone.** They are deliberately NOT bundled.
+   Download them on your Mac with the Cactus CLI:
+   ```bash
+   cactus download google/gemma-3n-E2B-it
+   cactus download openai/whisper-base      # for on-device STT
+   cactus download Qwen/Qwen3-Embedding-0.6B  # optional, enables RAG query
+   ```
+   Then in Finder → iPhone → Files → YConstruction, drag the folders in so they
+   end up at `Documents/models/gemma-3n-e2b-it/` and `Documents/models/whisper-base/`.
+   The app also has an **Import Model Folder** button for the AirDrop path.
+
+### Blender-side (architect)
+
+See [`tools/sanjay_bonsai_plugin/README.md`](tools/sanjay_bonsai_plugin/README.md)
+for the full walkthrough. Short version:
 
 ```bash
-cactus download google/gemma-3n-E2B-it
+cd tools
+zip -r yconstruction_sync.zip sanjay_bonsai_plugin
 ```
 
-The weights are intentionally excluded from git. Expected folder after download:
+In Blender: **Edit → Preferences → Get Extensions → Install from Disk →
+yconstruction_sync.zip**. Open `duplex.ifc` once per session. Press `N`, pick
+the **YConstruction** tab.
 
-```text
-/Users/sangeetasinha/Documents/YConstruction/cactus/weights/gemma-3n-e2b-it
-```
+## How a defect moves through the system
 
-The folder should contain files like:
+1. **Worker taps the mic**, says what's wrong. Whisper transcribes locally.
+2. **They aim at the issue, tap capture.** A photo is staged.
+3. **Gemma 3n** takes the transcript + photo + the project's IFC vocabulary and
+   produces a structured `Defect` (type, severity, storey, space, orientation,
+   element type, IFC GUID).
+4. **Local queue:** the defect + photo are written to disk first so losing
+   signal never loses the report.
+5. **Sync:** when online, `SyncService` uploads the photo to the `photos`
+   bucket, writes the Postgres row, and emits a BCF zip to the `issues` bucket.
+6. **Architect's Blender sidebar** sees the new row within 5 s, loads it into
+   Bonsai's BCF Topics panel on click.
+7. **Reply** from Bonsai → `bim.save_bcf_project` → re-uploaded → the phone's
+   Supabase realtime subscription fires → the worker sees the comment.
 
-- `config.txt`
-- `tokenizer.json`
-- `token_embeddings.weights`
-- many `.weights` files
+## What's intentionally out of scope
 
-If you want staged-photo question search over synced report history, also download:
+- **No Spanish / translation pass** in the current build — English-only voice.
+- **No cloud LLM fallback** — if the local model isn't present, the app tells
+  you so instead of calling an API.
+- **Single-turn voice capture**, not continuous streaming — the app auto-sends
+  on a pause, rather than running a live duplex session.
+- **Demo-grade auth** — Supabase access uses a project-scoped publishable key
+  plus RLS. Prod would give each worker a user account.
 
-```bash
-cactus download Qwen/Qwen3-Embedding-0.6B
-```
+## Credits
 
-and import the `qwen3-embedding-0.6b` folder into the app the same way.
-
-### 3. Put the model onto the iPhone
-
-The app no longer bundles the model. The model lives in local app storage on the phone.
-
-Best path:
-
-1. Connect the iPhone to your Mac.
-2. Open Finder.
-3. Select the iPhone in the sidebar.
-4. Open the `Files` tab.
-5. Open `YConstructionMVP`.
-6. Drag the whole `gemma-3n-e2b-it` folder into that area.
-
-Alternative path:
-
-1. AirDrop or otherwise place the `gemma-3n-e2b-it` folder somewhere visible in the Files app.
-2. In the app, tap `Import Model Folder`.
-3. Pick the `gemma-3n-e2b-it` folder.
-
-After the folder is present, launch the app and tap `Refresh` if it does not detect the model immediately.
-
-## Run on a physical iPhone 16 Pro
-
-1. Open `/Users/sangeetasinha/Documents/YConstruction/YConstructionMVP.xcodeproj` in Xcode.
-2. Select the `YConstructionMVP` target.
-3. In `Signing & Capabilities`, choose your Apple team.
-4. Keep `Automatically manage signing` enabled.
-5. Use a unique bundle identifier such as `com.yourname.yconstructionmvp`.
-6. Confirm `cactus-ios.xcframework` is linked.
-7. Connect the physical iPhone 16 Pro and enable Developer Mode if prompted.
-8. Select the physical phone as the run destination.
-9. Delete any old copy of `YConstructionMVP` from the phone.
-10. In Xcode, run `Product > Clean Build Folder`.
-11. Press `Run`.
-
-App installs are much smaller now because the Gemma weights are no longer copied into the app bundle.
-
-## How the app works now
-
-- The app opens in audio-first mode.
-- Tap the large mic button once and talk.
-- The app records local audio on-device.
-- When you pause long enough, the app automatically stops, transcribes the recording, and sends the transcript.
-- `CactusAIService` prewarms the locally installed Gemma 3n E2B model before the mic can be used.
-- `CactusRuntime` calls the real `cactus_complete(...)` function locally on the phone with the transcript as the user turn.
-- The reply is shown on screen and spoken back out loud.
-
-## Important limitations
-
-- This is a real local voice path, but it is still single-turn capture, not continuous live streaming.
-- The auto-stop behavior is implemented in the iPhone app with local audio level detection. It is not a built-in Gemma “stop when user stops talking” feature.
-- The model must be present in local app storage before the mic can be used.
-- Camera context is intentionally disabled in this Gemma 3n build.
-- `cactus auth` and `GEMINI_API_KEY` are not needed for this on-device path.
-- If the Gemini API key you pasted is real, revoke it.
-
-## Next steps
-
-1. Run the app on the physical iPhone 16 Pro
-2. Approve microphone and speech-recognition permissions
-3. Verify one full local voice-to-transcript-to-Gemma 3n round-trip
-4. Add a dedicated local STT model if you want to remove the Apple Speech transcription dependency
-5. Add construction-specific tools on top of the same `AIService` abstraction
+- [Cactus](https://github.com/cactus-compute/cactus) for the on-device LLM runtime.
+- [Bonsai](https://bonsaibim.org/) for turning Blender into a real IFC + BCF tool.
+- Logo generated with the [Nano Banana](https://github.com/anthropics/claude-code)
+  MCP server (Gemini image generation).
