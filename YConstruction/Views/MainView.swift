@@ -22,6 +22,7 @@ final class MainViewModel: ObservableObject {
     @Published var showingResolverPicker: Bool = false
 
     @Published var isOnline: Bool = true
+    @Published var isSyncing: Bool = false
 
     let renderer = SceneRendererService()
     let resolver = DefectResolverService()
@@ -33,6 +34,7 @@ final class MainViewModel: ObservableObject {
 
     var pipeline: PipelineService?
     private var storeObservation: AnyCancellable?
+    private var errorDismissTask: Task<Void, Never>?
 
     init(store: DefectStore) {
         self.store = store
@@ -46,6 +48,24 @@ final class MainViewModel: ObservableObject {
         }
     }
 
+    func showTransientError(_ message: String) {
+        loadError = message
+        errorDismissTask?.cancel()
+        errorDismissTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled, let self else { return }
+            if self.loadError == message {
+                self.loadError = nil
+            }
+        }
+    }
+
+    func clearTransientError() {
+        errorDismissTask?.cancel()
+        errorDismissTask = nil
+        loadError = nil
+    }
+
     enum RecorderState: Equatable {
         case idle
         case listening
@@ -56,7 +76,10 @@ final class MainViewModel: ObservableObject {
 
 struct MainView: View {
     @ObservedObject var viewModel: MainViewModel
+    @ObservedObject var workerDirectory: WorkerDirectoryService = .shared
     let onExit: () -> Void
+    @State private var showStoreyAlert = false
+    @State private var glossaryExpanded = true
 
     var body: some View {
         ZStack {
@@ -79,6 +102,16 @@ struct MainView: View {
 
             VStack {
                 topBar
+                HStack(alignment: .top) {
+                    Spacer()
+                    WorkerGlossaryView(
+                        workers: workersInView,
+                        counts: defectCountsByReporter,
+                        expanded: $glossaryExpanded
+                    )
+                    .padding(.trailing, 16)
+                    .padding(.top, 4)
+                }
                 Spacer()
                 bottomBar
             }
@@ -176,9 +209,46 @@ struct MainView: View {
             viewModel.renderer.setMode(newValue)
         }
         .onReceive(viewModel.syncService.$isOnline) { viewModel.isOnline = $0 }
+        .onReceive(viewModel.syncService.$isSyncing) { viewModel.isSyncing = $0 }
         .onReceive(viewModel.syncService.$lastSyncedAt) { date in
             if let date { viewModel.store.noteSynced(at: date) }
         }
+    }
+
+    private var visibleDefects: [Defect] {
+        let storey = viewModel.currentStorey
+        return viewModel.store.defects.filter { storey == nil || $0.storey == storey }
+    }
+
+    private var defectCountsByReporter: [String: Int] {
+        var counts: [String: Int] = [:]
+        for d in visibleDefects {
+            counts[d.reporter, default: 0] += 1
+        }
+        return counts
+    }
+
+    private var workersInView: [Worker] {
+        let names = Set(visibleDefects.map(\.reporter))
+        guard !names.isEmpty else { return [] }
+
+        let directoryByName = Dictionary(
+            uniqueKeysWithValues: workerDirectory.workers.map { ($0.name, $0) }
+        )
+
+        let now = Date()
+        let entries: [Worker] = names.map { name in
+            if let worker = directoryByName[name] { return worker }
+            return Worker(
+                id: "reporter:\(name)",
+                name: name,
+                department: "Unknown",
+                colorIndex: WorkerColorPalette.fallbackIndex(for: name),
+                createdAt: now,
+                updatedAt: now
+            )
+        }
+        return entries.sorted { $0.name < $1.name }
     }
 
     private var sheetBinding: Binding<Defect?> {
@@ -197,37 +267,93 @@ struct MainView: View {
     // MARK: - Top bar
 
     private var topBar: some View {
-        HStack {
+        GlassEffectContainer(spacing: 12) {
             HStack(spacing: 10) {
+                backButton
                 storeyPicker
                 SyncStatusBadge(
-                    pendingCount: viewModel.store.pendingSyncCount,
                     lastSyncedAt: viewModel.store.lastSyncedAt,
-                    isOnline: viewModel.isOnline
+                    isOnline: viewModel.isOnline,
+                    isSyncing: viewModel.isSyncing
                 )
+                Spacer()
+                openIssuesBadge
+                modeToggle
             }
-            Spacer()
-            modeToggle
+            .padding(.horizontal)
+            .padding(.top, 10)
         }
-        .padding(.horizontal)
-        .padding(.top, 10)
     }
 
+    private var backButton: some View {
+        Button(action: onExit) {
+            Image(systemName: "chevron.left")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 36, height: 36)
+                .glassEffect(.regular.interactive(), in: .circle)
+        }
+        .accessibilityLabel("Back to projects")
+    }
+
+    @ViewBuilder
     private var storeyPicker: some View {
-        Menu {
-            ForEach(viewModel.availableStoreys, id: \.self) { storey in
-                Button(storey) { viewModel.currentStorey = storey }
+        if viewModel.availableStoreys.count > 1 {
+            Menu {
+                ForEach(viewModel.availableStoreys, id: \.self) { storey in
+                    Button(storey) { viewModel.currentStorey = storey }
+                }
+            } label: {
+                storeyLabel(showChevron: true)
             }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "square.stack.3d.up")
-                Text(viewModel.currentStorey ?? "Storey")
-                Image(systemName: "chevron.down")
-                    .font(.caption2)
+        } else if let onlyStorey = viewModel.availableStoreys.first {
+            Button {
+                showStoreyAlert = true
+            } label: {
+                storeyLabel(showChevron: false)
             }
-            .font(.callout.weight(.medium))
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(.ultraThinMaterial, in: Capsule())
+            .alert("Single Storey Project", isPresented: $showStoreyAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("This project has only one storey: \(onlyStorey).")
+            }
+        }
+    }
+
+    private func storeyLabel(showChevron: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "square.stack.3d.up")
+            Text(viewModel.currentStorey ?? "Storey")
+                .lineLimit(1)
+            if showChevron {
+                Image(systemName: "chevron.down").font(.caption2)
+            }
+        }
+        .font(.callout.weight(.medium))
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 14)
+        .frame(height: 36)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    @ViewBuilder
+    private var openIssuesBadge: some View {
+        let openCount = viewModel.store.defects.filter { !$0.resolved }.count
+        if openCount > 0 {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(.red)
+                    .frame(width: 8, height: 8)
+                Text("\(openCount) OPEN")
+                    .font(.caption.weight(.bold))
+                    .tracking(0.8)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .foregroundStyle(.red)
+            .padding(.horizontal, 14)
+            .frame(height: 36)
+            .glassEffect(.regular, in: .capsule)
         }
     }
 
@@ -239,8 +365,10 @@ struct MainView: View {
         } label: {
             Text(viewModel.mode == .perspective3D ? "2D" : "3D")
                 .font(.callout.weight(.semibold))
-                .frame(width: 44, height: 36)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 14)
+                .frame(height: 36)
+                .glassEffect(.regular.interactive(), in: .capsule)
         }
     }
 
@@ -296,17 +424,21 @@ struct MainView: View {
             try await viewModel.renderer.load(glbURL: bundle.glbURL)
             try viewModel.resolver.load(from: bundle.elementIndexURL)
             if let idx = viewModel.resolver.index {
-                viewModel.availableStoreys = idx.storeys.map(\.name)
+                var storeyNames = idx.storeys.map(\.name)
+                if storeyNames.isEmpty { storeyNames = ["Ground"] }
+                viewModel.availableStoreys = storeyNames
                 viewModel.renderer.configure(storeys: idx.storeys)
                 viewModel.renderer.filterMeshes(keepingIndexed: idx)
                 let initialStorey = idx.storeys.first(where: { $0.name == "Level 1" })?.name
                     ?? idx.storeys.first?.name
+                    ?? storeyNames.first
                 viewModel.currentStorey = initialStorey
                 viewModel.renderer.setStorey(initialStorey)
             }
             viewModel.renderer.syncMarkers(with: viewModel.store.defects)
             viewModel.pipeline = PipelineService(viewModel: viewModel)
             viewModel.syncService.start()
+            workerDirectory.start()
             viewModel.isLoading = false
         } catch is CancellationError {
             viewModel.isLoading = false

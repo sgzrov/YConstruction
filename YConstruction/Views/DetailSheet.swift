@@ -5,6 +5,8 @@ struct DetailSheet: View {
     let onResolve: () -> Void
     let onDismiss: () -> Void
 
+    @ObservedObject private var workerDirectory: WorkerDirectoryService = .shared
+
     private var severityColor: Color {
         switch defect.severity {
         case .low: return .yellow
@@ -12,6 +14,20 @@ struct DetailSheet: View {
         case .high: return .red
         case .critical: return .purple
         }
+    }
+
+    private var reporterWorker: Worker? {
+        workerDirectory.worker(forReporter: defect.reporter)
+    }
+
+    private var reporterColor: Color {
+        let index = reporterWorker?.colorIndex
+            ?? WorkerColorPalette.fallbackIndex(for: defect.reporter)
+        return WorkerColorPalette.color(for: index)
+    }
+
+    private var shortDefectId: String {
+        String(defect.id.prefix(8))
     }
 
     var body: some View {
@@ -31,6 +47,8 @@ struct DetailSheet: View {
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(.orange.opacity(0.12), in: Capsule())
                 }
+
+                reporterCard
 
                 if let photoPath = defect.photoPath {
                     DefectPhotoSection(photoPath: photoPath)
@@ -57,13 +75,7 @@ struct DetailSheet: View {
                         .font(.callout)
                 }
 
-                HStack {
-                    Text(defect.reporter)
-                    Spacer()
-                    Text(defect.timestamp.formatted(date: .abbreviated, time: .shortened))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                metadataSection
 
                 Button(action: onResolve) {
                     HStack {
@@ -82,6 +94,73 @@ struct DetailSheet: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .onDisappear(perform: onDismiss)
+    }
+
+    private var reporterCard: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(reporterColor)
+                .overlay(Circle().stroke(.white.opacity(0.9), lineWidth: 2))
+                .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(defect.reporter)
+                    .font(.callout.weight(.semibold))
+                if let worker = reporterWorker {
+                    Text(worker.department)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Unknown department")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            Text(defect.timestamp.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .background(reporterColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var metadataSection: some View {
+        LabeledSection(title: "Details") {
+            VStack(alignment: .leading, spacing: 6) {
+                metadataRow(label: "ID", value: shortDefectId)
+                if !defect.guid.isEmpty {
+                    metadataRow(label: "Element GUID", value: defect.guid)
+                }
+                metadataRow(
+                    label: "Coordinates",
+                    value: String(
+                        format: "x %.2f · y %.2f · z %.2f",
+                        defect.centroidX, defect.centroidY, defect.centroidZ
+                    )
+                )
+                metadataRow(
+                    label: "Status",
+                    value: defect.resolved ? "Resolved" : "Open"
+                )
+                metadataRow(
+                    label: "Sync",
+                    value: defect.synced ? "Synced" : "Pending"
+                )
+            }
+        }
+    }
+
+    private func metadataRow(label: String, value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            Text(value)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

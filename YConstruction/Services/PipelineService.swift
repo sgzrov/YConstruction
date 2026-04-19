@@ -60,6 +60,7 @@ final class PipelineService {
 
     func startRecording() async {
         guard let vm = viewModel else { return }
+        vm.clearTransientError()
         vm.liveTranscript = ""
         vm.recorderState = .listening
         do {
@@ -69,7 +70,7 @@ final class PipelineService {
             }
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
         }
     }
 
@@ -81,7 +82,7 @@ final class PipelineService {
             await handleFinalTranscript(final)
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
         }
     }
 
@@ -95,7 +96,7 @@ final class PipelineService {
             await handleFinalTranscript(STTFinalResult(text: result.text, language: result.language))
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
         }
     }
 
@@ -105,15 +106,26 @@ final class PipelineService {
         guard let vm = viewModel else { return }
         vm.recorderState = .processing("Analyzing…")
 
+        let captured = final.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        print("[Pipeline] transcript (\(final.language ?? "?")): \"\(captured)\"")
+
+        guard !captured.isEmpty else {
+            vm.recorderState = .idle
+            vm.showTransientError("I didn't hear anything. Try recording again.")
+            return
+        }
+
         do {
             let audio = try await gemma.audioTurn(
                 transcriptOriginal: final.text,
                 languageHint: final.language
             )
 
+            print("[Pipeline] raw Gemma response:\n\(audio.raw)")
+
             guard let extraction = audio.extraction else {
                 vm.recorderState = .idle
-                vm.loadError = "Model did not extract structured fields."
+                vm.showTransientError("Couldn't extract a defect from: \"\(captured)\". Try naming the storey, room, element, and what's wrong.")
                 return
             }
 
@@ -142,7 +154,7 @@ final class PipelineService {
             }
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
         }
     }
 
@@ -172,7 +184,7 @@ final class PipelineService {
             _ = await finishAndInsert(report: report)
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
         }
     }
 
@@ -299,7 +311,7 @@ final class PipelineService {
             )
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
             return nil
         }
     }
@@ -350,7 +362,7 @@ final class PipelineService {
             )
         } catch {
             vm.recorderState = .idle
-            vm.loadError = error.localizedDescription
+            vm.showTransientError(error.localizedDescription)
             return nil
         }
     }

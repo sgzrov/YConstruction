@@ -39,15 +39,15 @@ final class SyncService: ObservableObject {
 
         monitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
-                let wasOnline = self?.isOnline ?? false
+                guard let self else { return }
+                let wasOnline = self.isOnline
                 let nowOnline = path.status == .satisfied
-                self?.isOnline = nowOnline
+                self.isOnline = nowOnline
                 if nowOnline && !wasOnline {
-                    await self?.catchUp()
-                    await self?.drain()
-                    self?.startRealtime()
+                    await self.reconnectSync()
+                    self.startRealtime()
                 } else if !nowOnline {
-                    self?.stopRealtime()
+                    self.stopRealtime()
                 }
             }
         }
@@ -76,10 +76,22 @@ final class SyncService: ObservableObject {
     }
 
     func drain() async {
-        guard supabase.isConfigured, let client = supabase.client() else { return }
         guard !isSyncing else { return }
         isSyncing = true
         defer { isSyncing = false }
+        await drainPending()
+    }
+
+    private func reconnectSync() async {
+        guard !isSyncing else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+        await catchUp()
+        await drainPending()
+    }
+
+    private func drainPending() async {
+        guard supabase.isConfigured, let client = supabase.client() else { return }
 
         let pending: [Defect]
         do { pending = try database.pendingSync(projectId: store.projectId) }

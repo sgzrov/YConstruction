@@ -37,6 +37,8 @@ actor STTService {
     private var streamHandle: CactusStreamTranscribeT?
     private var continuation: AsyncStream<STTPartial>.Continuation?
     private var accumulatedText: String = ""
+    private var chunkCount: Int = 0
+    private var bytesFed: Int = 0
 
     private init(cactus: CactusService = .shared) {
         self.cactus = cactus
@@ -52,11 +54,15 @@ actor STTService {
 
     func startStreaming() async throws -> AsyncStream<STTPartial> {
         guard await Self.requestMicPermission() else {
+            print("[STT] mic permission denied")
             throw STTServiceError.micPermissionDenied
         }
+        print("[STT] mic permission granted")
 
         let whisper = try await cactus.loadWhisper()
+        print("[STT] whisper loaded")
         let handle = try cactusStreamTranscribeStart(whisper, nil)
+        print("[STT] stream started")
 
         let session = AVAudioSession.sharedInstance()
         do {
@@ -123,18 +129,25 @@ actor STTService {
         teardownEngine()
         streamHandle = nil
         let finalJson = (try? cactusStreamTranscribeStop(handle)) ?? "{}"
+        print("[STT] final whisper JSON: \(finalJson)")
+        print("[STT] audio chunks fed: \(chunkCount), bytes: \(bytesFed)")
         deactivateAudioSession()
         continuation?.finish()
         continuation = nil
 
         let parsed = Self.parse(json: finalJson)
         let text = parsed.text.isEmpty ? accumulatedText : parsed.text
+        print("[STT] resolved final text: \"\(text)\" (accumulated partial: \"\(accumulatedText)\")")
         accumulatedText = ""
+        chunkCount = 0
+        bytesFed = 0
         return STTFinalResult(text: text, language: parsed.language)
     }
 
     private func feed(_ pcmData: Data) async {
         guard let handle = streamHandle else { return }
+        chunkCount += 1
+        bytesFed += pcmData.count
         do {
             let partialJson = try cactusStreamTranscribeProcess(handle, pcmData)
             let parsed = Self.parse(json: partialJson)
@@ -143,6 +156,7 @@ actor STTService {
                 continuation?.yield(STTPartial(text: parsed.text, isFinal: false))
             }
         } catch {
+            print("[STT] feed error: \(error.localizedDescription)")
             continuation?.finish()
         }
     }

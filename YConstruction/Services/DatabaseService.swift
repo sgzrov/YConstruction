@@ -82,7 +82,40 @@ final class DatabaseService: @unchecked Sendable {
             )
         }
 
+        m.registerMigration("v2_create_workers") { db in
+            try db.create(table: "workers") { t in
+                t.column("id", .text).primaryKey()
+                t.column("name", .text).notNull().unique()
+                t.column("department", .text).notNull()
+                t.column("color_index", .integer).notNull()
+                t.column("created_at", .datetime).notNull()
+                t.column("updated_at", .datetime).notNull()
+            }
+            try db.create(
+                index: "idx_workers_name",
+                on: "workers",
+                columns: ["name"]
+            )
+        }
+
         return m
+    }
+
+    // MARK: - Workers
+
+    func upsert(_ worker: Worker) throws {
+        try dbPool.write { db in
+            var w = worker
+            try w.upsert(db)
+        }
+    }
+
+    func allWorkers() throws -> [Worker] {
+        try dbPool.read { db in
+            try Worker
+                .order(Worker.Columns.colorIndex.asc)
+                .fetchAll(db)
+        }
     }
 
     // MARK: - CRUD

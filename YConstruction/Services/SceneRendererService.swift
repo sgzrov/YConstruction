@@ -31,6 +31,29 @@ final class SceneRendererService {
 
     // MARK: - Load
 
+    private func applyUnlitFallbackForMissingNormals() {
+        var materialsPatched = 0
+        var sampleDescribed = false
+        rootNode.enumerateChildNodes { node, _ in
+            guard let geom = node.geometry else { return }
+            for material in geom.materials {
+                if !sampleDescribed {
+                    print("[SceneRenderer] sample material: name=\(material.name ?? "nil")  lighting=\(material.lightingModel.rawValue)  diffuse=\(String(describing: material.diffuse.contents))  baseColor(metalness)=\(String(describing: material.metalness.contents))")
+                    sampleDescribed = true
+                }
+                if material.lightingModel == .physicallyBased {
+                    if material.diffuse.contents == nil, let color = material.metalness.contents {
+                        material.diffuse.contents = color
+                    }
+                }
+                material.lightingModel = .blinn
+                material.isDoubleSided = true
+                materialsPatched += 1
+            }
+        }
+        print("[SceneRenderer] materials switched to blinn: \(materialsPatched)")
+    }
+
     func load(glbURL: URL) async throws {
         let asset: GLTFAsset = try await withCheckedThrowingContinuation { cont in
             // GLTFKit2's handler fires repeatedly (parsing → validating → processing
@@ -72,6 +95,17 @@ final class SceneRendererService {
         let (minVec, maxVec) = scene.rootNode.boundingBox
         modelBounds = (minVec, maxVec)
         frameCameras(to: minVec, max: maxVec)
+        applyUnlitFallbackForMissingNormals()
+
+        var meshCount = 0, materialCount = 0, nodeCount = 0
+        rootNode.enumerateChildNodes { node, _ in
+            nodeCount += 1
+            if let g = node.geometry {
+                meshCount += 1
+                materialCount += g.materials.count
+            }
+        }
+        print("[SceneRenderer] loaded nodes=\(nodeCount) meshes=\(meshCount) materials=\(materialCount)")
     }
 
     /// Hide any glb mesh whose IFC GUID isn't in the resolver's element index.
@@ -146,19 +180,39 @@ final class SceneRendererService {
     private func frameCameras(to min: SCNVector3, max: SCNVector3) {
         let extents = SCNVector3(max.x - min.x, max.y - min.y, max.z - min.z)
         let center = SCNVector3((min.x + max.x) / 2, (min.y + max.y) / 2, (min.z + max.z) / 2)
-        let largestHoriz = Swift.max(abs(extents.x), abs(extents.y))
         let diag = sqrt(extents.x * extents.x + extents.y * extents.y + extents.z * extents.z)
 
-        pointOfView3D.position = SCNVector3(
-            center.x + diag * 0.8,
-            center.y - diag * 0.8,
-            center.z + diag * 0.6
-        )
-        pointOfView3D.look(at: center)
+        // Detect vertical axis by assuming the shorter of Y/Z is the building's height.
+        // IFC/Bonsai glTFs ship Z-up (duplex), glTF-spec-compliant exports ship Y-up (conference room).
+        let yIsUp = extents.y < extents.z
 
-        pointOfView2D.position = SCNVector3(center.x, center.y, center.z + diag)
-        pointOfView2D.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
-        pointOfView2D.camera?.orthographicScale = Double(largestHoriz / 2) + 1
+        if yIsUp {
+            pointOfView3D.position = SCNVector3(
+                center.x,
+                center.y,
+                center.z + diag * 2.5
+            )
+            pointOfView3D.eulerAngles = SCNVector3(0, 0, 0)
+            print("[SceneRenderer] YUP bbox=[\(min) .. \(max)] center=\(center) diag=\(diag)")
+            print("[SceneRenderer] YUP camera pos=\(pointOfView3D.position) euler=\(pointOfView3D.eulerAngles)")
+
+            pointOfView2D.position = SCNVector3(center.x, center.y + diag, center.z)
+            pointOfView2D.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+            pointOfView2D.camera?.orthographicScale =
+                Double(Swift.max(abs(extents.x), abs(extents.z))) * 2.0
+        } else {
+            pointOfView3D.position = SCNVector3(
+                center.x + diag * 0.8,
+                center.y - diag * 0.8,
+                center.z + diag * 0.6
+            )
+            pointOfView3D.look(at: center)
+
+            pointOfView2D.position = SCNVector3(center.x, center.y, center.z + diag)
+            pointOfView2D.eulerAngles = SCNVector3(-Float.pi / 2, 0, 0)
+            pointOfView2D.camera?.orthographicScale =
+                Double(Swift.max(abs(extents.x), abs(extents.y)) / 2) + 1
+        }
     }
 
     func pointOfView(for mode: SceneCameraMode) -> SCNNode {
@@ -182,7 +236,7 @@ final class SceneRendererService {
     private func refreshStoreyVisibility() {
         for child in markersNode.childNodes {
             let markerStorey = child.value(forKey: "storey") as? String
-            child.isHidden = (currentStorey != nil && markerStorey != currentStorey)
+            child.isHidden = (currentStorey != nil && markerStorey != nil && markerStorey != currentStorey)
         }
     }
 
@@ -216,6 +270,9 @@ final class SceneRendererService {
         container.setValue(defect.id, forKey: "defectId")
         container.setValue(defect.storey, forKey: "storey")
 
+        let colorIndex = WorkerDirectoryService.shared.colorIndex(forReporter: defect.reporter)
+        let color = WorkerColorPalette.uiColor(for: colorIndex)
+
         let width = CGFloat(defect.bboxMaxX - defect.bboxMinX)
         let height = CGFloat(defect.bboxMaxZ - defect.bboxMinZ)
         let length = CGFloat(defect.bboxMaxY - defect.bboxMinY)
@@ -223,8 +280,8 @@ final class SceneRendererService {
         let box = SCNBox(width: max(width, 0.05), height: max(height, 0.05), length: max(length, 0.05), chamferRadius: 0)
         let material = SCNMaterial()
         material.fillMode = .lines
-        material.diffuse.contents = UIColor.systemRed
-        material.emission.contents = UIColor.systemRed
+        material.diffuse.contents = color
+        material.emission.contents = color
         material.isDoubleSided = true
         material.lightingModel = .constant
         box.materials = [material]
@@ -237,20 +294,32 @@ final class SceneRendererService {
         )
         container.addChildNode(boxNode)
 
-        let centroid = SCNSphere(radius: 0.15)
+        let centroid = SCNSphere(radius: 0.35)
         let dotMaterial = SCNMaterial()
-        dotMaterial.diffuse.contents = UIColor.systemRed
-        dotMaterial.emission.contents = UIColor.systemRed
+        dotMaterial.diffuse.contents = color
+        dotMaterial.emission.contents = color
         dotMaterial.lightingModel = .constant
         centroid.materials = [dotMaterial]
+
+        let ring = SCNSphere(radius: 0.42)
+        let ringMaterial = SCNMaterial()
+        ringMaterial.diffuse.contents = UIColor.white
+        ringMaterial.emission.contents = UIColor.white
+        ringMaterial.transparency = 0.55
+        ringMaterial.lightingModel = .constant
+        ring.materials = [ringMaterial]
 
         let centroidNode = SCNNode(geometry: centroid)
         centroidNode.position = SCNVector3(defect.centroidX, defect.centroidY, defect.centroidZ)
         centroidNode.constraints = [SCNBillboardConstraint()]
 
+        let ringNode = SCNNode(geometry: ring)
+        ringNode.renderingOrder = -1
+        centroidNode.addChildNode(ringNode)
+
         let pulse = CABasicAnimation(keyPath: "scale")
         pulse.fromValue = SCNVector3(1, 1, 1)
-        pulse.toValue = SCNVector3(1.6, 1.6, 1.6)
+        pulse.toValue = SCNVector3(1.35, 1.35, 1.35)
         pulse.duration = 0.9
         pulse.autoreverses = true
         pulse.repeatCount = .infinity
@@ -258,7 +327,58 @@ final class SceneRendererService {
         centroidNode.addAnimation(pulse, forKey: "pulse")
         container.addChildNode(centroidNode)
 
+        let labelNode = makeLabelNode(text: defect.reporter, color: color)
+        labelNode.position = SCNVector3(defect.centroidX, defect.centroidY + 0.75, defect.centroidZ)
+        labelNode.constraints = [SCNBillboardConstraint()]
+        container.addChildNode(labelNode)
+
         updateMarkerState(container, defect: defect)
+        return container
+    }
+
+    private func makeLabelNode(text: String, color: UIColor) -> SCNNode {
+        let scnText = SCNText(string: text, extrusionDepth: 0)
+        scnText.font = UIFont.systemFont(ofSize: 14, weight: .semibold)
+        scnText.flatness = 0.2
+
+        let textMaterial = SCNMaterial()
+        textMaterial.diffuse.contents = UIColor.white
+        textMaterial.emission.contents = UIColor.white
+        textMaterial.lightingModel = .constant
+        scnText.materials = [textMaterial]
+
+        let textNode = SCNNode(geometry: scnText)
+        let (minBB, maxBB) = textNode.boundingBox
+        let textWidth = CGFloat(maxBB.x - minBB.x)
+        let textHeight = CGFloat(maxBB.y - minBB.y)
+        let scale: Float = 0.015
+        textNode.scale = SCNVector3(scale, scale, scale)
+        textNode.position = SCNVector3(
+            -Float(textWidth) * scale / 2,
+            -Float(textHeight) * scale / 2,
+            0.01
+        )
+
+        let padX: CGFloat = 8
+        let padY: CGFloat = 4
+        let plane = SCNPlane(
+            width: (textWidth * CGFloat(scale)) + padX * CGFloat(scale),
+            height: (textHeight * CGFloat(scale)) + padY * CGFloat(scale)
+        )
+        plane.cornerRadius = plane.height * 0.5
+
+        let planeMaterial = SCNMaterial()
+        planeMaterial.diffuse.contents = color
+        planeMaterial.emission.contents = color.withAlphaComponent(0.6)
+        planeMaterial.lightingModel = .constant
+        plane.materials = [planeMaterial]
+
+        let planeNode = SCNNode(geometry: plane)
+        planeNode.renderingOrder = -2
+
+        let container = SCNNode()
+        container.addChildNode(planeNode)
+        container.addChildNode(textNode)
         return container
     }
 

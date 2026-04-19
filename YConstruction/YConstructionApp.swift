@@ -24,7 +24,7 @@ struct RootView: View {
                         AppConfig.toggleDebugReporter()
                     }
             } else {
-                ProjectEntryView(onSubmit: loadProject)
+                ProjectListView(onSelect: loadProject)
                     .onLongPressGesture(minimumDuration: 1.2) {
                         showDebugSmokeTests = true
                     }
