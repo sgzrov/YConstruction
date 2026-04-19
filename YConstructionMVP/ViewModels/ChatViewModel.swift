@@ -637,29 +637,12 @@ final class ChatViewModel: ObservableObject {
                 await applyReportTurnOutcome(outcome)
 
             case .query:
-                ycLog("[handleStagedPhotoTurn] intent=query — RAG path will be invoked once question is ready")
-                isLoading = true
-                statusText = "Preparing the local question search..."
-                stagedPhotoStatusText = "Photo staged for a local question."
-                let existingState = PhotoQueryState(
-                    createdAt: createdAt,
-                    transcriptSnippets: Array(history.dropLast()),
-                    questionSummary: nil,
-                    storey: nil,
-                    space: nil,
-                    orientation: nil,
-                    elementType: nil,
-                    timeframeHint: nil,
-                    ambiguityNote: nil
-                )
-                let outcome = try await photoTurnCoordinator.processQueryTurn(
-                    existingState: existingState,
-                    newTranscript: transcript.text,
+                ycLog("[handleStagedPhotoTurn] intent=query — RAG activating directly")
+                await runDirectRAG(
+                    transcript: transcript.text,
                     createdAt: createdAt,
                     stagedPhotoPath: stagedPhotoPath
                 )
-                lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
-                await applyQueryTurnOutcome(outcome)
 
             case .unclear:
                 stagedPhotoSession = .awaitingIntent(createdAt: createdAt, transcriptSnippets: history)
@@ -673,26 +656,7 @@ final class ChatViewModel: ObservableObject {
             }
 
         case .report(let state):
-            if let pivotIntent = await photoTurnCoordinator.pivotIntent(
-                for: transcript.text,
-                currentIntent: .report,
-                cachedRecords: cachedRecords
-            ), pivotIntent == .query {
-                ycLog("[handleStagedPhotoTurn] pivoted report→query — RAG path will be invoked")
-                isLoading = true
-                statusText = "Switching to a local question search..."
-                stagedPhotoStatusText = "Photo staged for a local question."
-                let outcome = try await photoTurnCoordinator.processQueryTurn(
-                    existingState: makeQueryPivotState(from: state),
-                    newTranscript: transcript.text,
-                    createdAt: state.createdAt,
-                    stagedPhotoPath: stagedPhotoPath
-                )
-                lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
-                await applyQueryTurnOutcome(outcome)
-                return
-            }
-
+            // Hardcoded two-turn flow: just process the next turn, no pivot check.
             isLoading = true
             statusText = "Reviewing the new report..."
             let outcome = try await photoTurnCoordinator.processReportTurn(
@@ -705,37 +669,82 @@ final class ChatViewModel: ObservableObject {
             await applyReportTurnOutcome(outcome)
 
         case .query(let state):
-            if let pivotIntent = await photoTurnCoordinator.pivotIntent(
-                for: transcript.text,
-                currentIntent: .query,
-                cachedRecords: cachedRecords
-            ), pivotIntent == .report {
-                ycLog("[handleStagedPhotoTurn] pivoted query→report — RAG NOT used")
-                isLoading = true
-                statusText = "Switching to a new report..."
-                stagedPhotoStatusText = "Photo staged for a new report."
-                let outcome = try await photoTurnCoordinator.processReportTurn(
-                    existingState: makeReportPivotState(from: state),
-                    newTranscript: transcript.text,
-                    createdAt: state.createdAt,
-                    stagedPhotoPath: stagedPhotoPath
-                )
-                lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
-                await applyReportTurnOutcome(outcome)
-                return
-            }
-
-            isLoading = true
-            statusText = "Preparing the local question search..."
-            let outcome = try await photoTurnCoordinator.processQueryTurn(
-                existingState: state,
-                newTranscript: transcript.text,
+            // Direct RAG path — no pivot, no Gemma JSON extractor.
+            await runDirectRAG(
+                transcript: transcript.text,
                 createdAt: state.createdAt,
                 stagedPhotoPath: stagedPhotoPath
             )
-            lastRuntimeText = formatRuntimeStats(outcome.runtimeStats)
-            await applyQueryTurnOutcome(outcome)
         }
+    }
+
+    /// Direct RAG execution: announce "RAG activated", then run `answerQuery`
+    /// with the raw transcript as the question (no processQueryTurn JSON
+    /// extraction). Streams the answer into the sentence speaker so speech
+    /// starts as soon as Gemma emits its first sentence.
+    private func runDirectRAG(
+        transcript: String,
+        createdAt: Date,
+        stagedPhotoPath: String?
+    ) async {
+        isLoading = true
+        statusText = "RAG activated…"
+        stagedPhotoStatusText = "Searching synced history…"
+
+        ycLog("[runDirectRAG] transcript=\"\(transcript)\" photo=\(stagedPhotoPath ?? "nil")")
+
+        // Spoken acknowledgement before the heavy lifting.
+        let activationMessage = "RAG activated."
+        appendMessage(Message(text: activationMessage, sender: .assistant))
+        latestReply = activationMessage
+        speak(activationMessage)
+
+        let queryState = PhotoQueryState(
+            createdAt: createdAt,
+            transcriptSnippets: [transcript],
+            questionSummary: transcript.trimmingCharacters(in: .whitespacesAndNewlines),
+            storey: nil,
+            space: nil,
+            orientation: nil,
+            elementType: nil,
+            timeframeHint: nil,
+            ambiguityNote: nil
+        )
+        stagedPhotoSession = .query(queryState)
+
+        do {
+            let cachedRecords = await defectSyncService.cachedProjectChangesForRetrieval()
+            let speaker = StreamingSentenceSpeaker(synthesizer: synthesizer)
+            let answerOutcome = try await photoTurnCoordinator.answerQuery(
+                state: queryState,
+                cachedRecords: cachedRecords,
+                stagedPhotoPath: stagedPhotoPath,
+                onToken: { token in
+                    Task { @MainActor in speaker.ingest(token) }
+                }
+            )
+            speaker.flush()
+            appendMessage(Message(text: answerOutcome.assistantMessage, sender: .assistant))
+            latestReply = answerOutcome.assistantMessage
+            lastRuntimeText = formatRuntimeStats(answerOutcome.runtimeStats)
+            statusText = "Local answer ready."
+            lastInputSummary = answerOutcome.summaryText
+            if !speaker.didSpeakAnything {
+                speak(answerOutcome.assistantMessage)
+            }
+            clearStagedPhotoSession(deleteLocalPhoto: true)
+            await refreshLocalSearchStatus()
+        } catch {
+            ycLog("[runDirectRAG] ERROR \(error.localizedDescription)")
+            appendMessage(Message(text: error.localizedDescription, sender: .assistant))
+            latestReply = error.localizedDescription
+            statusText = "RAG failed."
+            lastInputSummary = "RAG pipeline was not ready."
+            speak(error.localizedDescription)
+            localSearchStatusText = error.localizedDescription
+        }
+
+        isLoading = false
     }
 
     private func applyReportTurnOutcome(_ outcome: PhotoReportTurnOutcome) async {
@@ -786,6 +795,11 @@ final class ChatViewModel: ObservableObject {
 
                 clearStagedPhotoSession(deleteLocalPhoto: false)
                 await refreshLocalSearchStatus()
+
+                // Kick off a Gemma insight question on top of the upload ack.
+                // Streams tokens into a sentence-buffered speaker so the worker
+                // hears the question as it generates, not 10s after.
+                await runReportInsight(for: outcome.state)
             } catch {
                 stagedPhotoSession = .report(outcome.state)
                 let assistantText = "I mapped the report, but saving it for Supabase failed. The staged photo is still here, and you can try again. \(error.localizedDescription)"
@@ -806,6 +820,33 @@ final class ChatViewModel: ObservableObject {
             Photo report is still being tagged locally.
             \(outcome.state.fields.compactSummaryLines().joined(separator: "\n"))
             """
+        }
+    }
+
+    /// After the hardcoded report upload, ask Gemma for one short follow-up
+    /// question and stream it to TTS. Wraps errors so a model hiccup doesn't
+    /// break the session — the upload already succeeded.
+    private func runReportInsight(for state: PhotoReportState) async {
+        let speaker = StreamingSentenceSpeaker(synthesizer: synthesizer)
+        statusText = "Gemma is preparing a follow-up…"
+        do {
+            let response = try await photoTurnCoordinator.generateReportInsight(
+                state: state,
+                onToken: { token in
+                    Task { @MainActor in speaker.ingest(token) }
+                }
+            )
+            speaker.flush()
+            let trimmed = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                appendMessage(Message(text: trimmed, sender: .assistant))
+                latestReply = trimmed
+                lastRuntimeText = formatRuntimeStats(response.runtimeStats)
+            }
+            statusText = "Ready on iPhone."
+        } catch {
+            // Upload already completed — don't panic if the insight call fails.
+            ycLog("[runReportInsight] insight generation failed: \(error.localizedDescription)")
         }
     }
 

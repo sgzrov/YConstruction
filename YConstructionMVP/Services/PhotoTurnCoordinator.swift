@@ -529,6 +529,40 @@ actor PhotoTurnCoordinator {
     static let reportFollowUpQuestion =
         "How critical is it, and what level is it on?"
 
+    /// After the hardcoded 2-turn upload lands, ask Gemma for one short
+    /// follow-up question related to the defect. Streams tokens so the caller
+    /// can speak the answer as it arrives. Returns the final buffered text in
+    /// case the caller wants to append it to a chat log.
+    ///
+    /// Non-blocking to the upload — the caller decides when to wait.
+    func generateReportInsight(
+        state: PhotoReportState,
+        onToken: @Sendable @escaping (String) -> Void
+    ) async throws -> AIResponse {
+        let fieldsLine = state.fields.compactSummaryLines().joined(separator: ", ")
+        let transcript = state.combinedTranscript
+        let prompt = """
+        A construction worker just logged a defect. Details:
+        \(fieldsLine)
+
+        What they said:
+        \(transcript)
+
+        In one sentence, ask one short helpful follow-up question so the team
+        can investigate or plan repair. Do not repeat the details back.
+        """
+        let started = Date()
+        ycLog("[generateReportInsight] start — prompting Gemma for one follow-up question")
+        let response = try await aiService.sendStreaming(
+            request: AIRequest(prompt: prompt, maxTokens: 64),
+            conversation: [],
+            onToken: onToken
+        )
+        let elapsed = Date().timeIntervalSince(started)
+        ycLog("[generateReportInsight] done in \(String(format: "%.2f", elapsed))s textLen=\(response.text.count)")
+        return response
+    }
+
     /// Deterministic two-turn report flow:
     ///
     ///   Turn 1 (initial report trigger) → speak `reportFollowUpQuestion`,
